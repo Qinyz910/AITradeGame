@@ -24,6 +24,7 @@ AI-driven trading strategies based on large language models, compatible with Ope
 - API Provider Management: Unified management of multiple AI service provider API configurations
 - Smart Model Selection: Automatically fetch available model lists for each provider
 - Aggregated View: View aggregated assets and performance comparison across all models
+- A-share Market Data: Real-time mainland China quotes, fundamentals, limit prices, and trading calendar via AkShare
 - System Settings: Configurable trading frequency and fee rates
 
 ### Online Version (Public)
@@ -41,6 +42,8 @@ Launch the online version at https://aitradegame.com without any installation.
 Download AITradeGame.exe from GitHub releases. Double-click the executable to run. The interface will open automatically. Start adding AI models and begin trading.
 
 Alternatively, clone the repository from GitHub. Install dependencies with pip install -r requirements.txt. Run the application with python app.py and visit http://localhost:5000.
+
+> Note: The AkShare-powered A-share data service depends on pandas and numpy. The requirements file installs compatible versions automatically; make sure your Python environment can build or install those wheels before launching the app.
 
 ### Docker Deployment
 

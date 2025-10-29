@@ -2,14 +2,25 @@
 from __future__ import annotations
 
 from datetime import date, datetime, time as dt_time, timedelta, timezone
-from typing import Optional
+from typing import Optional, Set, Tuple
 
 try:
     from zoneinfo import ZoneInfo
+
     has_zoneinfo = True
-except ImportError:
+except ImportError:  # pragma: no cover - Python <3.9 fallback
     has_zoneinfo = False
     ZoneInfo = None  # type: ignore
+
+try:  # pragma: no cover - optional dependency
+    import akshare as ak  # type: ignore
+except ImportError:
+    ak = None  # type: ignore
+
+try:  # pragma: no cover - optional dependency
+    import pandas as pd  # type: ignore
+except ImportError:
+    pd = None  # type: ignore
 
 
 MORNING_OPEN = dt_time(9, 30)
@@ -70,7 +81,6 @@ A_SHARE_COMPENSATORY_WORKDAYS = {
     date(2025, 10, 11),
 }
 
-
 if has_zoneinfo:
     CN_TZ = ZoneInfo("Asia/Shanghai")
     UTC_TZ = ZoneInfo("UTC")
@@ -82,8 +92,9 @@ else:  # pragma: no cover - fallback for environments without zoneinfo
 class MarketCalendar:
     """Provide trading session awareness for supported markets."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.cn_tz = CN_TZ
+        self._calendar_cache: Optional[Tuple[date, Set[date]]] = None
 
     # ------------------------------------------------------------------
     # Public helpers
@@ -93,10 +104,9 @@ class MarketCalendar:
         return status.get("market_open", False)
 
     def get_market_status(self, market_type: str, when: Optional[datetime] = None) -> dict:
-        market_type = (market_type or "crypto").lower()
-        if market_type == "a_share":
+        market_key = (market_type or "crypto").lower()
+        if market_key == "a_share":
             return self._get_a_share_status(when)
-        # Crypto trades 24/7; provide consistent shape.
         now = self._ensure_utc(when)
         return {
             "market_type": "crypto",
@@ -109,9 +119,8 @@ class MarketCalendar:
         }
 
     def next_trading_day(self, market_type: str, from_date: date) -> date:
-        market_type = (market_type or "crypto").lower()
-        if market_type != "a_share":
-            # Crypto trades daily
+        market_key = (market_type or "crypto").lower()
+        if market_key != "a_share":
             return from_date + timedelta(days=1)
 
         current = from_date
@@ -123,13 +132,27 @@ class MarketCalendar:
     def next_sellable_date(self, market_type: str, trade_datetime: Optional[datetime]) -> Optional[str]:
         if trade_datetime is None:
             return None
-        market_type = (market_type or "crypto").lower()
-        if market_type != "a_share":
+        market_key = (market_type or "crypto").lower()
+        if market_key != "a_share":
             return trade_datetime.date().isoformat()
 
         localized = self._ensure_cn(trade_datetime)
         next_day = self.next_trading_day("a_share", localized.date())
         return next_day.isoformat()
+
+    def is_trading_day(self, market_type: str, check_date: Optional[date] = None) -> bool:
+        market_key = (market_type or "crypto").lower()
+        probe_date = check_date or datetime.now(self.cn_tz).date()
+        if market_key != "a_share":
+            return True
+        return self._is_a_share_trading_day(probe_date)
+
+    def is_trading_session_now(self, market_type: str, when: Optional[datetime] = None) -> bool:
+        market_key = (market_type or "crypto").lower()
+        if market_key != "a_share":
+            return True
+        status = self._get_a_share_status(when)
+        return status.get("market_open", False)
 
     # ------------------------------------------------------------------
     # Internal logic
@@ -145,7 +168,7 @@ class MarketCalendar:
         reason = None
 
         if not is_trading_day:
-            reason = "Holiday" if today in A_SHARE_DEFAULT_HOLIDAYS else "Weekend"
+            reason = "Weekend" if today.weekday() >= 5 else "Holiday"
         else:
             if MORNING_OPEN <= time_now < MORNING_CLOSE:
                 session = "morning"
@@ -160,11 +183,7 @@ class MarketCalendar:
             else:
                 reason = "Post-market"
 
-        next_open_dt = None
-        if market_open:
-            next_open_dt = None
-        else:
-            next_open_dt = self._next_a_share_open_datetime(now_cn)
+        next_open_dt = None if market_open else self._next_a_share_open_datetime(now_cn)
 
         return {
             "market_type": "a_share",
@@ -192,13 +211,67 @@ class MarketCalendar:
             if self._is_a_share_trading_day(next_day):
                 return datetime.combine(next_day, MORNING_OPEN, tzinfo=self.cn_tz)
 
+    # ------------------------------------------------------------------
+    # Calendar helpers
+    # ------------------------------------------------------------------
+    def _ensure_calendar(self) -> Set[date]:
+        today = datetime.now(self.cn_tz).date()
+        if self._calendar_cache:
+            cached_day, cached_calendar = self._calendar_cache
+            if cached_day == today:
+                return cached_calendar
+
+        calendar_days: Set[date] = set()
+        if ak is not None:
+            try:
+                df = ak.tool_trade_date_hist_sina()  # type: ignore[attr-defined]
+                if pd is not None and isinstance(df, pd.DataFrame) and not df.empty:
+                    for value in df.iloc[:, 0].tolist():
+                        try:
+                            calendar_days.add(pd.to_datetime(value).date())
+                        except Exception:  # pragma: no cover - defensive
+                            calendar_days.add(_coerce_to_date(value))
+                elif isinstance(df, list):  # pragma: no cover - defensive
+                    for value in df:
+                        calendar_days.add(_coerce_to_date(value))
+            except Exception as exc:  # pragma: no cover - network failures
+                print(f"[WARN] Failed to refresh A-share trading calendar: {exc}")
+
+        if not calendar_days:
+            calendar_days = self._fallback_calendar(today)
+
+        self._calendar_cache = (today, calendar_days)
+        return calendar_days
+
+    def _fallback_calendar(self, today: date) -> Set[date]:
+        start = today - timedelta(days=365)
+        end = today + timedelta(days=365)
+        days: Set[date] = set()
+        for offset in range((end - start).days + 1):
+            current = start + timedelta(days=offset)
+            if current in A_SHARE_COMPENSATORY_WORKDAYS:
+                days.add(current)
+                continue
+            if current.weekday() >= 5:
+                continue
+            if current in A_SHARE_DEFAULT_HOLIDAYS:
+                continue
+            days.add(current)
+        return days
+
     def _is_a_share_trading_day(self, check_date: date) -> bool:
+        calendar_days = self._ensure_calendar()
+        if check_date in calendar_days:
+            return True
         if check_date in A_SHARE_COMPENSATORY_WORKDAYS:
             return True
         if check_date in A_SHARE_DEFAULT_HOLIDAYS:
             return False
         return check_date.weekday() < 5
 
+    # ------------------------------------------------------------------
+    # Timezone helpers
+    # ------------------------------------------------------------------
     def _ensure_cn(self, when: Optional[datetime]) -> datetime:
         if when is None:
             return datetime.now(self.cn_tz)
@@ -212,3 +285,17 @@ class MarketCalendar:
         if when.tzinfo is None:
             return when.replace(tzinfo=UTC_TZ)
         return when.astimezone(UTC_TZ)
+
+
+def _coerce_to_date(value) -> date:
+    if isinstance(value, date):
+        return value
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, str):
+        try:
+            return datetime.strptime(value.split(" ")[0], "%Y-%m-%d").date()
+        except ValueError:
+            pass
+    # Fallback to today's date when parsing fails; this keeps calendar usable.
+    return datetime.now(CN_TZ).date()
