@@ -43,14 +43,61 @@ def _enrich_positions(positions, quotes, market_type):
     current_dt = _parse_timestamp(server_time) if server_time else datetime.now()
     current_date = current_dt.date() if current_dt else datetime.now().date()
     for pos in positions:
-        quote = quotes.get(pos['coin'], {})
+        instrument_code = pos.get('instrument_code') or pos.get('coin')
+        pos['instrument_code'] = instrument_code
+        quote = quotes.get(instrument_code) or quotes.get(pos.get('coin'), {}) or {}
         metadata = pos.get('metadata') or {}
-        pos['board'] = pos.get('board') or metadata.get('board') or quote.get('board')
-        pos['suspension'] = quote.get('suspension', pos.get('suspension', False))
-        pos['limit_up_price'] = pos.get('limit_up_price') or metadata.get('limit_up_price') or quote.get('limit_up_price')
-        pos['limit_down_price'] = pos.get('limit_down_price') or metadata.get('limit_down_price') or quote.get('limit_down_price')
-        pos['fundamentals'] = quote.get('fundamentals', {})
-        pos['is_st'] = quote.get('is_st', metadata.get('is_st', False))
+        instrument_meta = pos.get('instrument_metadata') or {}
+        pos['board'] = (
+            pos.get('board')
+            or metadata.get('board')
+            or instrument_meta.get('board')
+            or quote.get('board')
+        )
+        suspension_val = quote.get('suspension')
+        if suspension_val is None:
+            suspension_val = pos.get('suspension')
+        if suspension_val is None:
+            suspension_val = instrument_meta.get('suspension')
+        pos['suspension'] = bool(suspension_val) if suspension_val is not None else False
+        pos['limit_up_price'] = (
+            pos.get('limit_up_price')
+            or metadata.get('limit_up_price')
+            or instrument_meta.get('limit_up_price')
+            or quote.get('limit_up_price')
+        )
+        pos['limit_down_price'] = (
+            pos.get('limit_down_price')
+            or metadata.get('limit_down_price')
+            or instrument_meta.get('limit_down_price')
+            or quote.get('limit_down_price')
+        )
+        fundamentals = instrument_meta.get('fundamentals') or quote.get('fundamentals') or {}
+        if metadata.get('fundamentals'):
+            fundamentals = {**fundamentals, **metadata.get('fundamentals')}
+        pos['fundamentals'] = fundamentals
+        st_value = quote.get('is_st')
+        if st_value is None:
+            st_value = instrument_meta.get('is_st')
+        if st_value is None:
+            st_value = metadata.get('is_st')
+        pos['is_st'] = bool(st_value) if st_value is not None else False
+        status_flags = pos.get('status_flags') or instrument_meta.get('status_flags') or metadata.get('status_flags')
+        if isinstance(status_flags, str):
+            status_flags = [status_flags]
+        pos['status_flags'] = status_flags or []
+        pos['trading_status'] = (
+            pos.get('trading_status')
+            or instrument_meta.get('trading_status')
+            or quote.get('trading_status')
+        )
+        lot_size_val = pos.get('lot_size')
+        if lot_size_val is None:
+            lot_size_val = instrument_meta.get('lot_size') or quote.get('lot_size')
+        try:
+            pos['lot_size'] = int(lot_size_val) if lot_size_val is not None else None
+        except (TypeError, ValueError):
+            pos['lot_size'] = None
         stored_next = pos.get('next_sellable_date') or metadata.get('next_sellable_date')
         if stored_next:
             pos['next_sellable_date'] = stored_next
@@ -67,19 +114,44 @@ def _enrich_positions(positions, quotes, market_type):
         else:
             pos['t1_locked'] = False
         pos['entry_fee_total'] = metadata.get('entry_fee_total')
+        pos['last_settlement_date'] = pos.get('last_settlement_date') or metadata.get('last_settlement_date')
     return positions
 
 def _enrich_trades(trades, quotes, market_type):
     if market_type != 'a_share':
         return trades
     for trade in trades:
-        quote = quotes.get(trade.get('coin'), {})
+        instrument_code = trade.get('instrument_code') or trade.get('coin')
+        trade['instrument_code'] = instrument_code
+        quote = quotes.get(instrument_code) or quotes.get(trade.get('coin'), {}) or {}
         metadata = trade.get('metadata') or {}
         fee_details = trade.get('fee_details') or {}
-        trade['board'] = trade.get('board') or metadata.get('board') or quote.get('board')
-        trade['suspension'] = quote.get('suspension', trade.get('suspension', False))
-        trade['limit_up_price'] = trade.get('limit_up_price') or metadata.get('limit_up_price') or quote.get('limit_up_price')
-        trade['limit_down_price'] = trade.get('limit_down_price') or metadata.get('limit_down_price') or quote.get('limit_down_price')
+        instrument_meta = trade.get('instrument_metadata') or {}
+        trade['board'] = (
+            trade.get('board')
+            or metadata.get('board')
+            or instrument_meta.get('board')
+            or quote.get('board')
+        )
+        suspension_val = quote.get('suspension')
+        if suspension_val is None:
+            suspension_val = trade.get('suspension')
+        if suspension_val is None:
+            suspension_val = instrument_meta.get('suspension')
+        trade['suspension'] = bool(suspension_val) if suspension_val is not None else False
+        trade['limit_up_price'] = (
+            trade.get('limit_up_price')
+            or metadata.get('limit_up_price')
+            or instrument_meta.get('limit_up_price')
+            or quote.get('limit_up_price')
+        )
+        trade['limit_down_price'] = (
+            trade.get('limit_down_price')
+            or metadata.get('limit_down_price')
+            or instrument_meta.get('limit_down_price')
+            or quote.get('limit_down_price')
+        )
+        trade['fundamentals'] = instrument_meta.get('fundamentals') or quote.get('fundamentals') or {}
         next_sellable = metadata.get('next_sellable_date') or trade.get('next_sellable_date')
         if next_sellable:
             trade['next_sellable_date'] = next_sellable
@@ -93,6 +165,11 @@ def _enrich_trades(trades, quotes, market_type):
         trade['total_fee'] = fee_details.get('total', trade.get('fee'))
         trade['allocated_entry_fee'] = metadata.get('allocated_entry_fee')
         trade['net_pnl_before_entry_fee'] = metadata.get('net_pnl_before_entry_fee')
+        status_flags = trade.get('status_flags') or instrument_meta.get('status_flags') or metadata.get('status_flags')
+        if isinstance(status_flags, str):
+            status_flags = [status_flags]
+        trade['status_flags'] = status_flags or []
+        trade['trading_status'] = trade.get('trading_status') or instrument_meta.get('trading_status') or quote.get('trading_status')
     return trades
 
 @app.route('/')
@@ -320,7 +397,11 @@ def get_trades(model_id):
     trades = db.get_trades(model_id, limit=limit)
     market_type = model.get('market_type', 'crypto')
     if trades and market_type == 'a_share':
-        unique_symbols = list({trade.get('coin') for trade in trades if trade.get('coin')})
+        unique_symbols = list({
+            trade.get('instrument_code') or trade.get('coin')
+            for trade in trades
+            if trade.get('instrument_code') or trade.get('coin')
+        })
         quotes = market_fetcher.get_current_prices(unique_symbols, market_type='a_share') if unique_symbols else {}
         trades = _enrich_trades(trades, quotes, 'a_share')
     return jsonify(trades)
@@ -365,10 +446,12 @@ def get_aggregated_portfolio():
         total_portfolio['initial_capital'] += portfolio.get('initial_capital', 0)
 
         for pos in positions:
-            key = f"{market_type}_{pos['coin']}_{pos['side']}"
+            instrument_key = pos.get('instrument_code') or pos['coin']
+            key = f"{market_type}_{instrument_key}_{pos['side']}"
             if key not in all_positions:
                 all_positions[key] = {
                     'coin': pos['coin'],
+                    'instrument_code': instrument_key,
                     'side': pos['side'],
                     'market_type': market_type,
                     'quantity': 0,
@@ -378,9 +461,12 @@ def get_aggregated_portfolio():
                     'current_price': pos.get('current_price'),
                     'pnl': 0,
                     'board': pos.get('board'),
-                    'suspension': pos.get('suspension'),
+                    'suspension': bool(pos.get('suspension')),
                     'limit_up_price': pos.get('limit_up_price'),
                     'limit_down_price': pos.get('limit_down_price'),
+                    'status_flags': pos.get('status_flags') or [],
+                    'trading_status': pos.get('trading_status'),
+                    'lot_size': pos.get('lot_size'),
                 }
 
             current_pos = all_positions[key]
@@ -395,6 +481,23 @@ def get_aggregated_portfolio():
                 price = pos.get('current_price') or 0
                 current_pos['current_price'] = price
                 current_pos['pnl'] = (price - current_pos['avg_price']) * total_quantity
+                if not current_pos.get('board') and pos.get('board'):
+                    current_pos['board'] = pos.get('board')
+                if pos.get('suspension'):
+                    current_pos['suspension'] = pos.get('suspension')
+                if pos.get('limit_up_price') and not current_pos.get('limit_up_price'):
+                    current_pos['limit_up_price'] = pos.get('limit_up_price')
+                if pos.get('limit_down_price') and not current_pos.get('limit_down_price'):
+                    current_pos['limit_down_price'] = pos.get('limit_down_price')
+                if pos.get('status_flags'):
+                    existing_flags = current_pos.get('status_flags') or []
+                    new_flags = [flag for flag in pos.get('status_flags') if flag not in existing_flags]
+                    if new_flags:
+                        current_pos['status_flags'] = existing_flags + new_flags
+                if pos.get('trading_status') and not current_pos.get('trading_status'):
+                    current_pos['trading_status'] = pos.get('trading_status')
+                if pos.get('lot_size') and not current_pos.get('lot_size'):
+                    current_pos['lot_size'] = pos.get('lot_size')
 
     total_portfolio['positions'] = list(all_positions.values())
 

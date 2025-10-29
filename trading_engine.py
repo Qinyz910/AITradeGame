@@ -248,11 +248,12 @@ class TradingEngine:
             return {'coin': coin, 'error': 'Invalid quantity', 'market_type': self.market_type}
         leverage = int(decision.get('leverage', 1) or 1)
         leverage = max(leverage, 1)
+        quote = market_state.get(coin, {}) or {}
         target_price = decision.get('price')
         try:
-            price = float(target_price) if target_price else float(market_state[coin]['price'])
+            price = float(target_price) if target_price else float(quote.get('price'))
         except (TypeError, ValueError):
-            price = float(market_state[coin]['price'])
+            price = float(quote.get('price', 0) or 0)
         if price <= 0:
             return {'coin': coin, 'error': 'Market price unavailable', 'market_type': self.market_type}
         trade_amount = quantity * price
@@ -267,9 +268,20 @@ class TradingEngine:
             quantity,
             price,
             leverage,
-            'long'
+            'long',
+            instrument_code=coin,
+            market_type=self.market_type,
+            board=quote.get('board'),
+            status_flags=quote.get('status_flags'),
+            lot_size=quote.get('lot_size'),
+            suspension=quote.get('suspension'),
+            trading_status=quote.get('trading_status')
         )
         cash_after = portfolio['cash'] - total_required
+        execution_dt = datetime.utcnow()
+        trade_metadata = {'execution': 'market'}
+        if quote.get('board'):
+            trade_metadata['board'] = quote.get('board')
         self.db.add_trade(
             self.model_id,
             coin,
@@ -281,10 +293,12 @@ class TradingEngine:
             pnl=0,
             fee=trade_fee,
             market_type=self.market_type,
-            board=market_state.get(coin, {}).get('board'),
+            board=quote.get('board'),
             fee_details={'total': trade_fee},
-            metadata={'execution': 'market'},
-            cash_balance=cash_after
+            metadata=trade_metadata,
+            cash_balance=cash_after,
+            instrument_code=coin,
+            trade_date=execution_dt.date().isoformat()
         )
         return {
             'coin': coin,
@@ -304,11 +318,12 @@ class TradingEngine:
             return {'coin': coin, 'error': 'Invalid quantity', 'market_type': self.market_type}
         leverage = int(decision.get('leverage', 1) or 1)
         leverage = max(leverage, 1)
+        quote = market_state.get(coin, {}) or {}
         target_price = decision.get('price')
         try:
-            price = float(target_price) if target_price else float(market_state[coin]['price'])
+            price = float(target_price) if target_price else float(quote.get('price'))
         except (TypeError, ValueError):
-            price = float(market_state[coin]['price'])
+            price = float(quote.get('price', 0) or 0)
         if price <= 0:
             return {'coin': coin, 'error': 'Market price unavailable', 'market_type': self.market_type}
         trade_amount = quantity * price
@@ -323,9 +338,20 @@ class TradingEngine:
             quantity,
             price,
             leverage,
-            'short'
+            'short',
+            instrument_code=coin,
+            market_type=self.market_type,
+            board=quote.get('board'),
+            status_flags=quote.get('status_flags'),
+            lot_size=quote.get('lot_size'),
+            suspension=quote.get('suspension'),
+            trading_status=quote.get('trading_status')
         )
         cash_after = portfolio['cash'] - total_required
+        execution_dt = datetime.utcnow()
+        trade_metadata = {'execution': 'market'}
+        if quote.get('board'):
+            trade_metadata['board'] = quote.get('board')
         self.db.add_trade(
             self.model_id,
             coin,
@@ -337,10 +363,12 @@ class TradingEngine:
             pnl=0,
             fee=trade_fee,
             market_type=self.market_type,
-            board=market_state.get(coin, {}).get('board'),
+            board=quote.get('board'),
             fee_details={'total': trade_fee},
-            metadata={'execution': 'market'},
-            cash_balance=cash_after
+            metadata=trade_metadata,
+            cash_balance=cash_after,
+            instrument_code=coin,
+            trade_date=execution_dt.date().isoformat()
         )
         return {
             'coin': coin,
@@ -381,7 +409,18 @@ class TradingEngine:
         trade_amount = quantity * current_price
         trade_fee = trade_amount * self.trade_fee_rate
         net_pnl = gross_pnl - trade_fee
-        self.db.close_position(self.model_id, coin, side)
+        quote = market_state.get(coin, {}) or {}
+        self.db.close_position(
+            self.model_id,
+            coin,
+            side,
+            instrument_code=coin,
+            market_type=self.market_type
+        )
+        execution_dt = datetime.utcnow()
+        trade_metadata = {'execution': 'market'}
+        if quote.get('board'):
+            trade_metadata['board'] = quote.get('board')
         self.db.add_trade(
             self.model_id,
             coin,
@@ -393,10 +432,12 @@ class TradingEngine:
             pnl=net_pnl,
             fee=trade_fee,
             market_type=self.market_type,
-            board=market_state.get(coin, {}).get('board'),
+            board=quote.get('board'),
             fee_details={'total': trade_fee},
-            metadata={'execution': 'market'},
-            cash_balance=portfolio['cash'] + (trade_amount - trade_fee)
+            metadata=trade_metadata,
+            cash_balance=portfolio['cash'] + (trade_amount - trade_fee),
+            instrument_code=coin,
+            trade_date=execution_dt.date().isoformat()
         )
         return {
             'coin': coin,
@@ -458,6 +499,18 @@ class TradingEngine:
         next_sellable_date = self.market_calendar.next_sellable_date('a_share', trade_datetime) if self.market_calendar else None
         position_metadata = dict(existing_position.get('metadata', {})) if existing_position else {}
         entry_fee_total = float(position_metadata.get('entry_fee_total', 0)) + total_fee_raw
+        status_flags = []
+        if quote.get('is_st'):
+            status_flags.append('ST')
+        if quote.get('suspension'):
+            status_flags.append('SUSPENDED')
+        quote_flags = quote.get('status_flags')
+        if isinstance(quote_flags, str):
+            quote_flags = [quote_flags]
+        if isinstance(quote_flags, (list, tuple, set)):
+            for flag in quote_flags:
+                if flag and flag not in status_flags:
+                    status_flags.append(flag)
         position_metadata.update({
             'entry_fee_total': entry_fee_total,
             'board': quote.get('board'),
@@ -465,7 +518,8 @@ class TradingEngine:
             'limit_down_price': quote.get('limit_down_price'),
             'last_buy_date': last_buy_date,
             'next_sellable_date': next_sellable_date,
-            'market_type': self.market_type
+            'market_type': self.market_type,
+            'status_flags': status_flags
         })
         self.db.update_position(
             self.model_id,
@@ -476,8 +530,38 @@ class TradingEngine:
             'long',
             metadata=position_metadata,
             last_buy_date=last_buy_date,
-            next_sellable_date=next_sellable_date
+            next_sellable_date=next_sellable_date,
+            instrument_code=coin,
+            market_type=self.market_type,
+            board=quote.get('board'),
+            status_flags=status_flags or None,
+            lot_size=quote.get('lot_size', self.lot_size),
+            suspension=quote.get('suspension'),
+            trading_status=quote.get('trading_status'),
+            last_settlement_date=trade_datetime.date().isoformat()
         )
+        try:
+            fundamentals = quote.get('fundamentals') or {}
+            self.db.upsert_instrument_metadata(
+                coin,
+                self.market_type,
+                name=quote.get('name'),
+                board=quote.get('board'),
+                status_flags=status_flags or fundamentals.get('status_flags'),
+                trading_status=quote.get('trading_status'),
+                is_st=quote.get('is_st'),
+                suspension=quote.get('suspension'),
+                limit_up_price=quote.get('limit_up_price'),
+                limit_down_price=quote.get('limit_down_price'),
+                lot_size=quote.get('lot_size', self.lot_size),
+                market_cap=fundamentals.get('market_cap'),
+                pe=fundamentals.get('pe_dynamic') or fundamentals.get('pe'),
+                pb=fundamentals.get('pb'),
+                fundamentals=fundamentals,
+                metadata={'updated_from': 'trading_engine_buy'}
+            )
+        except Exception:
+            pass
         cash_after = portfolio['cash'] - total_required
         trade_metadata = {
             'limit_up_price': quote.get('limit_up_price'),
@@ -485,7 +569,8 @@ class TradingEngine:
             'board': quote.get('board'),
             'market_status': status,
             'next_sellable_date': next_sellable_date,
-            'executed_at': trade_datetime.isoformat()
+            'executed_at': trade_datetime.isoformat(),
+            'status_flags': status_flags,
         }
         fee_details_record = {
             'commission': fees['commission'],
@@ -507,7 +592,9 @@ class TradingEngine:
             board=quote.get('board'),
             fee_details=fee_details_record,
             metadata=trade_metadata,
-            cash_balance=cash_after
+            cash_balance=cash_after,
+            instrument_code=coin,
+            trade_date=trade_datetime.date().isoformat()
         )
         message = (
             f"Buy {normalized_quantity} {coin} @ {self.cash_currency} {execution_price:.2f} "
@@ -562,6 +649,18 @@ class TradingEngine:
         if normalized_quantity <= 0:
             return {'coin': coin, 'error': 'Invalid sell quantity', 'market_type': self.market_type}
         quote = market_state.get(coin, {})
+        status_flags = []
+        if quote.get('is_st'):
+            status_flags.append('ST')
+        if quote.get('suspension'):
+            status_flags.append('SUSPENDED')
+        quote_flags = quote.get('status_flags')
+        if isinstance(quote_flags, str):
+            quote_flags = [quote_flags]
+        if isinstance(quote_flags, (list, tuple, set)):
+            for flag in quote_flags:
+                if flag and flag not in status_flags:
+                    status_flags.append(flag)
         target_price = decision.get('price')
         try:
             execution_price = float(target_price) if target_price else float(quote.get('price', 0))
@@ -606,11 +705,18 @@ class TradingEngine:
         net_pnl_after_entry = net_pnl_before_entry - allocated_entry_fee
         remaining_quantity = max(position_quantity - normalized_quantity, 0)
         if remaining_quantity <= 0:
-            self.db.close_position(self.model_id, coin, 'long')
+            self.db.close_position(
+                self.model_id,
+                coin,
+                'long',
+                instrument_code=coin,
+                market_type=self.market_type
+            )
         else:
             remaining_quantity = float(int(round(remaining_quantity)))
             remaining_entry_fee = max(entry_fee_total - allocated_entry_fee, 0)
             metadata['entry_fee_total'] = remaining_entry_fee
+            metadata['status_flags'] = status_flags
             self.db.update_position(
                 self.model_id,
                 coin,
@@ -620,8 +726,38 @@ class TradingEngine:
                 'long',
                 metadata=metadata,
                 last_buy_date=position.get('last_buy_date'),
-                next_sellable_date=position.get('next_sellable_date')
+                next_sellable_date=position.get('next_sellable_date'),
+                instrument_code=coin,
+                market_type=self.market_type,
+                board=quote.get('board'),
+                status_flags=status_flags or metadata.get('status_flags'),
+                lot_size=quote.get('lot_size', self.lot_size),
+                suspension=quote.get('suspension'),
+                trading_status=quote.get('trading_status'),
+                last_settlement_date=trade_datetime.date().isoformat()
             )
+        try:
+            fundamentals = quote.get('fundamentals') or {}
+            self.db.upsert_instrument_metadata(
+                coin,
+                self.market_type,
+                name=quote.get('name'),
+                board=quote.get('board'),
+                status_flags=status_flags or fundamentals.get('status_flags'),
+                trading_status=quote.get('trading_status'),
+                is_st=quote.get('is_st'),
+                suspension=quote.get('suspension'),
+                limit_up_price=quote.get('limit_up_price'),
+                limit_down_price=quote.get('limit_down_price'),
+                lot_size=quote.get('lot_size', self.lot_size),
+                market_cap=fundamentals.get('market_cap'),
+                pe=fundamentals.get('pe_dynamic') or fundamentals.get('pe'),
+                pb=fundamentals.get('pb'),
+                fundamentals=fundamentals,
+                metadata={'updated_from': 'trading_engine_close'}
+            )
+        except Exception:
+            pass
         cash_after = portfolio['cash'] + (trade_amount - total_fee_raw)
         trade_metadata = {
             'limit_up_price': quote.get('limit_up_price'),
@@ -631,7 +767,8 @@ class TradingEngine:
             'next_sellable_date_before': next_sellable,
             'executed_at': trade_datetime.isoformat(),
             'allocated_entry_fee': allocated_entry_fee,
-            'net_pnl_before_entry_fee': net_pnl_before_entry
+            'net_pnl_before_entry_fee': net_pnl_before_entry,
+            'status_flags': status_flags,
         }
         fee_details_record = {
             'commission': fees['commission'],
@@ -653,7 +790,9 @@ class TradingEngine:
             board=quote.get('board'),
             fee_details=fee_details_record,
             metadata=trade_metadata,
-            cash_balance=cash_after
+            cash_balance=cash_after,
+            instrument_code=coin,
+            trade_date=trade_datetime.date().isoformat()
         )
         message = (
             f"Sell {normalized_quantity} {coin} @ {self.cash_currency} {execution_price:.2f} "
