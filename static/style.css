@@ -216,6 +216,162 @@ body {
     letter-spacing: 0.5px;
 }
 
+.section-header.market-section-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    text-transform: none;
+}
+
+.section-header.market-section-header .section-title {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-weight: 600;
+    color: var(--text-3);
+    text-transform: uppercase;
+}
+
+.market-tabs {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--bg-2);
+    padding: 2px;
+    border-radius: 999px;
+}
+
+.market-tab {
+    border: none;
+    background: transparent;
+    color: var(--text-3);
+    font-size: 12px;
+    padding: 4px 12px;
+    border-radius: 999px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.market-tab:hover {
+    color: var(--text-1);
+}
+
+.market-tab.active {
+    background: var(--bg-1);
+    color: var(--primary);
+    box-shadow: var(--shadow-1);
+}
+
+.market-prices {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.market-panel {
+    display: none;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.market-panel.active {
+    display: flex;
+}
+
+.market-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+    overflow: hidden;
+    border-radius: var(--radius);
+}
+
+.market-table thead {
+    background: var(--bg-2);
+}
+
+.market-table th,
+.market-table td {
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border-1);
+    text-align: left;
+}
+
+.market-table th {
+    color: var(--text-2);
+    font-weight: 600;
+}
+
+.market-table td {
+    color: var(--text-1);
+}
+
+.market-table tr:last-child td {
+    border-bottom: none;
+}
+
+.price-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 12px;
+    background: var(--bg-2);
+    border-radius: var(--radius);
+}
+
+.status-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 6px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 500;
+    background: var(--bg-2);
+    color: var(--text-2);
+}
+
+.status-badge--suspended {
+    background: #fff4e5;
+    color: var(--warning);
+}
+
+.status-badge--st {
+    background: #ffe7e7;
+    color: var(--danger);
+}
+
+.status-badge--normal {
+    background: #e8f7ff;
+    color: var(--info);
+}
+
+.limit-price {
+    font-size: 11px;
+    color: var(--text-3);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.limit-price strong {
+    color: var(--text-2);
+}
+
+.fundamental-metric {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    font-size: 11px;
+    color: var(--text-3);
+}
+
+.fundamental-metric span {
+    background: var(--bg-3);
+    padding: 2px 6px;
+    border-radius: 4px;
+}
+
 /* Model List */
 .model-list {
     display: flex;
@@ -256,6 +412,56 @@ body {
     color: var(--text-3);
 }
 
+.model-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 8px;
+    font-size: 12px;
+    color: var(--text-3);
+}
+
+.model-market-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 11px;
+    font-weight: 600;
+    background: var(--bg-3);
+    color: var(--text-2);
+    text-transform: uppercase;
+}
+
+.model-market-badge i {
+    font-size: 12px;
+}
+
+.model-market-badge--crypto {
+    background: #f0f5ff;
+    color: var(--info);
+}
+
+.model-market-badge--ashare {
+    background: #fff0f6;
+    color: var(--danger);
+}
+
+.model-ticker-list {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    font-size: 12px;
+    color: var(--text-3);
+}
+
+.model-ticker-list span {
+    background: var(--bg-3);
+    padding: 2px 6px;
+    border-radius: 6px;
+}
+
 .model-delete {
     color: var(--danger);
     cursor: pointer;
@@ -265,22 +471,6 @@ body {
 
 .model-item:hover .model-delete {
     opacity: 1;
-}
-
-/* Market Prices */
-.market-prices {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-}
-
-.price-item {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 8px 12px;
-    background: var(--bg-2);
-    border-radius: var(--radius);
 }
 
 .price-symbol {
@@ -713,6 +903,104 @@ body {
     font-size: 12px;
     color: var(--text-3);
     line-height: 1.4;
+}
+
+.market-type-selector {
+    display: flex;
+    gap: 16px;
+}
+
+.radio-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    padding: 10px 16px;
+    border: 2px solid var(--border-1);
+    border-radius: var(--radius);
+    transition: all 0.2s;
+}
+
+.radio-label:hover {
+    border-color: var(--primary);
+    background: var(--bg-2);
+}
+
+.radio-label input[type="radio"] {
+    width: 18px;
+    height: 18px;
+    cursor: pointer;
+}
+
+.radio-label.active {
+    border-color: var(--primary);
+    background: #f0f5ff;
+}
+
+.radio-label.active span {
+    color: var(--primary);
+    font-weight: 600;
+}
+
+.conversation-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+}
+
+.conversation-market-type {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 11px;
+    font-weight: 600;
+    background: var(--bg-3);
+}
+
+.conversation-market-type--crypto {
+    background: #f0f5ff;
+    color: var(--info);
+}
+
+.conversation-market-type--ashare {
+    background: #fff0f6;
+    color: var(--danger);
+}
+
+.trade-error-message {
+    background: #fff4e5;
+    border-left: 3px solid var(--warning);
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    color: var(--text-2);
+    margin-top: 4px;
+}
+
+.fee-breakdown {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    font-size: 11px;
+    color: var(--text-3);
+}
+
+.fee-breakdown-item {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.fee-breakdown-item span:first-child {
+    color: var(--text-3);
+}
+
+.fee-breakdown-item span:last-child {
+    color: var(--text-2);
+    font-weight: 500;
 }
 
 /* Responsive */
