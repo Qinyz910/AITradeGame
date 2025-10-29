@@ -44,6 +44,7 @@ class Database:
                 market_type TEXT DEFAULT 'crypto',
                 instruments TEXT,
                 cash_currency TEXT DEFAULT 'USD',
+                market_config TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (provider_id) REFERENCES providers(id)
             )
@@ -65,6 +66,11 @@ class Database:
         except sqlite3.OperationalError:
             pass
         
+        try:
+            cursor.execute('ALTER TABLE models ADD COLUMN market_config TEXT')
+        except sqlite3.OperationalError:
+            pass
+        
         # Portfolios table
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS portfolios (
@@ -75,11 +81,29 @@ class Database:
                 avg_price REAL NOT NULL,
                 leverage INTEGER DEFAULT 1,
                 side TEXT DEFAULT 'long',
+                metadata TEXT,
+                last_buy_date TEXT,
+                next_sellable_date TEXT,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (model_id) REFERENCES models(id),
                 UNIQUE(model_id, coin, side)
             )
         ''')
+        
+        try:
+            cursor.execute('ALTER TABLE portfolios ADD COLUMN metadata TEXT')
+        except sqlite3.OperationalError:
+            pass
+        
+        try:
+            cursor.execute('ALTER TABLE portfolios ADD COLUMN last_buy_date TEXT')
+        except sqlite3.OperationalError:
+            pass
+        
+        try:
+            cursor.execute('ALTER TABLE portfolios ADD COLUMN next_sellable_date TEXT')
+        except sqlite3.OperationalError:
+            pass
         
         # Trades table
         cursor.execute('''
@@ -94,10 +118,40 @@ class Database:
                 side TEXT DEFAULT 'long',
                 pnl REAL DEFAULT 0,
                 fee REAL DEFAULT 0,
+                market_type TEXT,
+                board TEXT,
+                fee_details TEXT,
+                metadata TEXT,
+                cash_balance REAL,
                 timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (model_id) REFERENCES models(id)
             )
         ''')
+        
+        try:
+            cursor.execute('ALTER TABLE trades ADD COLUMN market_type TEXT')
+        except sqlite3.OperationalError:
+            pass
+        
+        try:
+            cursor.execute('ALTER TABLE trades ADD COLUMN board TEXT')
+        except sqlite3.OperationalError:
+            pass
+        
+        try:
+            cursor.execute('ALTER TABLE trades ADD COLUMN fee_details TEXT')
+        except sqlite3.OperationalError:
+            pass
+        
+        try:
+            cursor.execute('ALTER TABLE trades ADD COLUMN metadata TEXT')
+        except sqlite3.OperationalError:
+            pass
+        
+        try:
+            cursor.execute('ALTER TABLE trades ADD COLUMN cash_balance REAL')
+        except sqlite3.OperationalError:
+            pass
         
         # Conversations table
         cursor.execute('''
@@ -163,20 +217,34 @@ class Database:
     
     # ============ Portfolio Management ============
     
-    def update_position(self, model_id: int, coin: str, quantity: float, 
-                       avg_price: float, leverage: int = 1, side: str = 'long'):
+    def update_position(
+        self,
+        model_id: int,
+        coin: str,
+        quantity: float,
+        avg_price: float,
+        leverage: int = 1,
+        side: str = 'long',
+        metadata: Optional[Dict] = None,
+        last_buy_date: Optional[str] = None,
+        next_sellable_date: Optional[str] = None
+    ):
         """Update position"""
         conn = self.get_connection()
         cursor = conn.cursor()
+        metadata_json = json.dumps(metadata) if metadata is not None else None
         cursor.execute('''
-            INSERT INTO portfolios (model_id, coin, quantity, avg_price, leverage, side, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            INSERT INTO portfolios (model_id, coin, quantity, avg_price, leverage, side, metadata, last_buy_date, next_sellable_date, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             ON CONFLICT(model_id, coin, side) DO UPDATE SET
                 quantity = excluded.quantity,
                 avg_price = excluded.avg_price,
                 leverage = excluded.leverage,
+                metadata = CASE WHEN excluded.metadata IS NOT NULL THEN excluded.metadata ELSE metadata END,
+                last_buy_date = CASE WHEN excluded.last_buy_date IS NOT NULL THEN excluded.last_buy_date ELSE last_buy_date END,
+                next_sellable_date = CASE WHEN excluded.next_sellable_date IS NOT NULL THEN excluded.next_sellable_date ELSE next_sellable_date END,
                 updated_at = CURRENT_TIMESTAMP
-        ''', (model_id, coin, quantity, avg_price, leverage, side))
+        ''', (model_id, coin, quantity, avg_price, leverage, side, metadata_json, last_buy_date, next_sellable_date))
         conn.commit()
         conn.close()
     
@@ -190,61 +258,104 @@ class Database:
         conn = self.get_connection()
         cursor = conn.cursor()
         
-        # Get positions
         cursor.execute('''
             SELECT * FROM portfolios WHERE model_id = ? AND quantity > 0
         ''', (model_id,))
-        positions = [dict(row) for row in cursor.fetchall()]
+        raw_positions = cursor.fetchall()
+        positions: List[Dict] = []
+        for row in raw_positions:
+            pos = dict(row)
+            metadata_raw = pos.get('metadata')
+            if metadata_raw:
+                try:
+                    pos['metadata'] = json.loads(metadata_raw)
+                except (json.JSONDecodeError, TypeError):
+                    pos['metadata'] = {}
+            else:
+                pos['metadata'] = {}
+            positions.append(pos)
         
-        # Get initial capital
         cursor.execute('SELECT initial_capital FROM models WHERE id = ?', (model_id,))
-        initial_capital = cursor.fetchone()['initial_capital']
+        capital_row = cursor.fetchone()
+        initial_capital = capital_row['initial_capital'] if capital_row else 0
         
-        # Calculate realized P&L (sum of all trade P&L)
         cursor.execute('''
-            SELECT COALESCE(SUM(pnl), 0) as total_pnl FROM trades WHERE model_id = ?
+            SELECT COALESCE(SUM(pnl), 0) as total_pnl
+            FROM trades
+            WHERE model_id = ?
         ''', (model_id,))
-        realized_pnl = cursor.fetchone()['total_pnl']
+        realized_row = cursor.fetchone()
+        realized_pnl_raw = realized_row['total_pnl'] if realized_row else 0
         
-        # Calculate margin used
-        margin_used = sum([p['quantity'] * p['avg_price'] / p['leverage'] for p in positions])
+        cursor.execute('''
+            SELECT 
+                COALESCE(SUM(CASE WHEN signal IN ('buy_to_enter', 'sell_to_enter') THEN fee ELSE 0 END), 0) AS entry_fees,
+                COALESCE(SUM(fee), 0) AS total_fees
+            FROM trades
+            WHERE model_id = ?
+        ''', (model_id,))
+        fees_row = cursor.fetchone()
+        entry_fees_trades = fees_row['entry_fees'] if fees_row else 0
+        total_fees = fees_row['total_fees'] if fees_row else 0
+
+        cursor.execute('''
+            SELECT metadata FROM trades
+            WHERE model_id = ? AND signal = 'close_position' AND metadata IS NOT NULL
+        ''', (model_id,))
+        close_rows = cursor.fetchall()
+        allocated_entry_fees = 0.0
+        for row in close_rows:
+            metadata_raw = row['metadata']
+            if metadata_raw:
+                try:
+                    metadata_obj = json.loads(metadata_raw)
+                    allocated_entry_fees += float(metadata_obj.get('allocated_entry_fee', 0) or 0)
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    continue
+
+        entry_fees_open_metadata = sum(float((pos.get('metadata') or {}).get('entry_fee_total', 0) or 0) for pos in positions)
+        entry_fees_open = max(entry_fees_trades - allocated_entry_fees, entry_fees_open_metadata, 0)
+        realized_pnl = realized_pnl_raw - entry_fees_open
         
-        # Calculate unrealized P&L (if prices provided)
-        unrealized_pnl = 0
+        margin_used = 0
+        for pos in positions:
+            leverage = pos.get('leverage') or 1
+            if leverage == 0:
+                leverage = 1
+            margin_used += (pos['quantity'] * pos['avg_price']) / leverage
+        
+        unrealized_pnl = 0.0
+        positions_value = 0.0
         if current_prices:
             for pos in positions:
                 coin = pos['coin']
-                if coin in current_prices:
-                    current_price = current_prices[coin]
-                    entry_price = pos['avg_price']
-                    quantity = pos['quantity']
-                    
-                    # Add current price to position
-                    pos['current_price'] = current_price
-                    
-                    # Calculate position P&L
-                    if pos['side'] == 'long':
-                        pos_pnl = (current_price - entry_price) * quantity
-                    else:  # short
-                        pos_pnl = (entry_price - current_price) * quantity
-                    
-                    pos['pnl'] = pos_pnl
-                    unrealized_pnl += pos_pnl
-                else:
+                entry_price = pos['avg_price']
+                quantity = pos['quantity']
+                side = pos.get('side', 'long')
+                current_price = current_prices.get(coin)
+                if current_price is None:
                     pos['current_price'] = None
                     pos['pnl'] = 0
+                    positions_value += quantity * entry_price
+                    continue
+                pos['current_price'] = current_price
+                if side == 'long':
+                    market_value = quantity * current_price
+                    pos_pnl = (current_price - entry_price) * quantity
+                else:
+                    market_value = quantity * entry_price
+                    pos_pnl = (entry_price - current_price) * quantity
+                pos['market_value'] = market_value
+                pos['pnl'] = pos_pnl
+                positions_value += market_value
+                unrealized_pnl += pos_pnl
         else:
             for pos in positions:
                 pos['current_price'] = None
                 pos['pnl'] = 0
+                positions_value += pos['quantity'] * pos['avg_price']
         
-        # Cash = initial capital + realized P&L - margin used
         cash = initial_capital + realized_pnl - margin_used
-        
-        # Position value = quantity * entry price (not margin!)
-        positions_value = sum([p['quantity'] * p['avg_price'] for p in positions])
-        
-        # Total account value = initial capital + realized P&L + unrealized P&L
         total_value = initial_capital + realized_pnl + unrealized_pnl
         
         conn.close()
@@ -257,9 +368,34 @@ class Database:
             'margin_used': margin_used,
             'total_value': total_value,
             'realized_pnl': realized_pnl,
+            'realized_pnl_before_entry_fees': realized_pnl_raw,
+            'entry_fees': entry_fees_open,
+            'fees_paid': total_fees,
             'unrealized_pnl': unrealized_pnl,
             'initial_capital': initial_capital
         }
+    
+    def get_position(self, model_id: int, coin: str, side: str = 'long') -> Optional[Dict]:
+        """Fetch a single position"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT * FROM portfolios WHERE model_id = ? AND coin = ? AND side = ? LIMIT 1
+        ''', (model_id, coin, side))
+        row = cursor.fetchone()
+        conn.close()
+        if not row:
+            return None
+        position = dict(row)
+        metadata_raw = position.get('metadata')
+        if metadata_raw:
+            try:
+                position['metadata'] = json.loads(metadata_raw)
+            except (json.JSONDecodeError, TypeError):
+                position['metadata'] = {}
+        else:
+            position['metadata'] = {}
+        return position
     
     def close_position(self, model_id: int, coin: str, side: str = 'long'):
         """Close position"""
@@ -273,15 +409,45 @@ class Database:
     
     # ============ Trade Records ============
     
-    def add_trade(self, model_id: int, coin: str, signal: str, quantity: float,
-              price: float, leverage: int = 1, side: str = 'long', pnl: float = 0, fee: float = 0):  # 新增fee参数
-        """Add trade record with fee"""
+    def add_trade(
+        self,
+        model_id: int,
+        coin: str,
+        signal: str,
+        quantity: float,
+        price: float,
+        leverage: int = 1,
+        side: str = 'long',
+        pnl: float = 0,
+        fee: float = 0,
+        market_type: Optional[str] = None,
+        board: Optional[str] = None,
+        fee_details: Optional[Dict] = None,
+        metadata: Optional[Dict] = None,
+        cash_balance: Optional[float] = None
+    ):
+        """Add trade record with detailed metadata"""
         conn = self.get_connection()
         cursor = conn.cursor()
         cursor.execute('''
-            INSERT INTO trades (model_id, coin, signal, quantity, price, leverage, side, pnl, fee)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)  # 新增fee字段
-        ''', (model_id, coin, signal, quantity, price, leverage, side, pnl, fee))  # 传入fee值
+            INSERT INTO trades (model_id, coin, signal, quantity, price, leverage, side, pnl, fee, market_type, board, fee_details, metadata, cash_balance)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            model_id,
+            coin,
+            signal,
+            quantity,
+            price,
+            leverage,
+            side,
+            pnl,
+            fee,
+            market_type,
+            board,
+            json.dumps(fee_details) if fee_details is not None else None,
+            json.dumps(metadata) if metadata is not None else None,
+            cash_balance
+        ))
         conn.commit()
         conn.close()
     
@@ -295,7 +461,27 @@ class Database:
         ''', (model_id, limit))
         rows = cursor.fetchall()
         conn.close()
-        return [dict(row) for row in rows]
+        trades: List[Dict] = []
+        for row in rows:
+            trade = dict(row)
+            fee_details = trade.get('fee_details')
+            if fee_details:
+                try:
+                    trade['fee_details'] = json.loads(fee_details)
+                except (json.JSONDecodeError, TypeError):
+                    trade['fee_details'] = {}
+            else:
+                trade['fee_details'] = {}
+            metadata_raw = trade.get('metadata')
+            if metadata_raw:
+                try:
+                    trade['metadata'] = json.loads(metadata_raw)
+                except (json.JSONDecodeError, TypeError):
+                    trade['metadata'] = {}
+            else:
+                trade['metadata'] = {}
+            trades.append(trade)
+        return trades
     
     # ============ Conversation History ============
     
@@ -549,18 +735,20 @@ class Database:
         initial_capital: float = 10000,
         market_type: str = 'crypto',
         instruments: Optional[List[str]] = None,
-        cash_currency: str = 'USD'
+        cash_currency: str = 'USD',
+        market_config: Optional[Dict] = None
     ) -> int:
         """Add new trading model"""
         conn = self.get_connection()
         cursor = conn.cursor()
         instruments_json = json.dumps(instruments or [])
+        market_config_json = json.dumps(market_config or {})
         cursor.execute(
             '''
-            INSERT INTO models (name, provider_id, model_name, initial_capital, market_type, instruments, cash_currency)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO models (name, provider_id, model_name, initial_capital, market_type, instruments, cash_currency, market_config)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ''',
-            (name, provider_id, model_name, initial_capital, market_type, instruments_json, cash_currency)
+            (name, provider_id, model_name, initial_capital, market_type, instruments_json, cash_currency, market_config_json)
         )
         model_id = cursor.lastrowid
         conn.commit()
@@ -588,6 +776,14 @@ class Database:
                     result['instruments'] = []
             else:
                 result['instruments'] = []
+
+            if result.get('market_config'):
+                try:
+                    result['market_config'] = json.loads(result['market_config'])
+                except (json.JSONDecodeError, TypeError):
+                    result['market_config'] = {}
+            else:
+                result['market_config'] = {}
             return result
         return None
 
@@ -613,6 +809,14 @@ class Database:
                     item['instruments'] = []
             else:
                 item['instruments'] = []
+
+            if item.get('market_config'):
+                try:
+                    item['market_config'] = json.loads(item['market_config'])
+                except (json.JSONDecodeError, TypeError):
+                    item['market_config'] = {}
+            else:
+                item['market_config'] = {}
             results.append(item)
         return results
 
