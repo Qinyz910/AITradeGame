@@ -61,18 +61,16 @@
                 <div class="sidebar-section">
                     <div class="section-header market-section-header">
                         <div class="section-title">
-                            <span>市场行情</span>
+                            <span>A股行情</span>
                             <i class="bi bi-graph-up-arrow"></i>
                         </div>
-                        <div class="market-tabs" role="tablist">
-                            <button class="market-tab active" data-market="crypto" type="button">加密货币</button>
-                            <button class="market-tab" data-market="ashare" type="button">A股</button>
-                        </div>
+                        <div class="market-status-pill" id="marketStatusBadge">--</div>
                     </div>
-                    <div id="marketPrices" class="market-prices">
-                        <div class="market-panel active" data-panel="crypto"></div>
-                        <div class="market-panel" data-panel="ashare"></div>
+                    <div class="market-meta" id="marketStatusMeta">
+                        <div class="market-status-text" id="marketStatusText">市场状态加载中...</div>
+                        <div class="market-status-sub" id="marketStatusSub"></div>
                     </div>
+                    <div id="marketPrices" class="market-prices"></div>
                 </div>
             </aside>
 
@@ -133,22 +131,20 @@
                             <table class="data-table">
                                 <thead id="positionsTableHead">
                                     <tr>
-                                        <th>标的</th>
-                                        <th>方向</th>
-                                        <th>数量</th>
-                                        <th>开仓价</th>
-                                        <th>当前价</th>
-                                        <th class="leverage-col">杠杆</th>
-                                        <th class="ashare-col" style="display: none;">板块</th>
-                                        <th class="ashare-col" style="display: none;">状态</th>
-                                        <th class="ashare-col" style="display: none;">涨停价</th>
-                                        <th class="ashare-col" style="display: none;">跌停价</th>
-                                        <th class="ashare-col" style="display: none;">可卖日期</th>
-                                        <th>盈亏</th>
+                                        <th>股票代码</th>
+                                        <th>板块</th>
+                                        <th>持股数量</th>
+                                        <th>持仓成本</th>
+                                        <th>最新价</th>
+                                        <th>涨停价</th>
+                                        <th>跌停价</th>
+                                        <th>可卖日期</th>
+                                        <th>状态</th>
+                                        <th>浮动盈亏</th>
                                     </tr>
                                 </thead>
                                 <tbody id="positionsBody">
-                                    <tr><td colspan="12" class="empty-state">暂无持仓</td></tr>
+                                    <tr><td colspan="10" class="empty-state">暂无持仓</td></tr>
                                 </tbody>
                             </table>
                         </div>
@@ -159,14 +155,14 @@
                             <table class="data-table">
                                 <thead id="tradesTableHead">
                                     <tr>
-                                        <th>时间</th>
-                                        <th>标的</th>
-                                        <th>操作</th>
-                                        <th class="trade-status-col">状态</th>
-                                        <th>数量</th>
-                                        <th>价格</th>
+                                        <th>成交时间</th>
+                                        <th>股票代码</th>
+                                        <th>交易指令</th>
+                                        <th class="trade-status-col">成交状态</th>
+                                        <th>成交数量</th>
+                                        <th>成交价</th>
                                         <th>盈亏</th>
-                                        <th>费用</th>
+                                        <th>费用明细</th>
                                     </tr>
                                 </thead>
                                 <tbody id="tradesBody">
@@ -257,28 +253,20 @@
                     <input type="text" id="modelName" placeholder="例如: GPT-4交易员" class="form-input">
                     <small class="form-help">用于显示的友好名称</small>
                 </div>
-                <div class="form-group">
-                    <label>市场类型</label>
-                    <div class="market-type-selector">
-                        <label class="radio-label">
-                            <input type="radio" name="marketType" value="crypto" checked>
-                            <span>加密货币</span>
-                        </label>
-                        <label class="radio-label">
-                            <input type="radio" name="marketType" value="ashare">
-                            <span>A股</span>
-                        </label>
+                <div class="form-group" id="instrumentSelectGroup">
+                    <label>股票池（可多选）</label>
+                    <div class="instrument-toolbar">
+                        <button type="button" class="btn-secondary" id="refreshInstrumentBtn">
+                            <i class="bi bi-arrow-clockwise"></i> 刷新列表
+                        </button>
                     </div>
-                </div>
-                <div class="form-group" id="tickerSelectGroup" style="display: none;">
-                    <label>选择股票代码</label>
-                    <select id="tickerSelect" class="form-input" multiple size="5">
+                    <select id="instrumentSelect" class="form-input" multiple size="8">
                         <option value="">加载中...</option>
                     </select>
-                    <small class="form-help">可多选。A股实行T+1制度，最小交易单位为100股（1手）</small>
+                    <small class="form-help">按住Ctrl或Shift可多选，默认每手100股</small>
                 </div>
                 <div class="form-group">
-                    <label>初始资金</label>
+                    <label>初始资金（人民币）</label>
                     <input type="number" id="initialCapital" value="100000" class="form-input">
                 </div>
             </div>
@@ -368,6 +356,5 @@
     </div>
 
     <script src="/static/app.js"></script>
-    <script src="/static/ashare_extension.js"></script>
 </body>
 </html>

@@ -2,12 +2,21 @@ class TradingApp {
     constructor() {
         this.currentModelId = null;
         this.isAggregatedView = false;
+        this.models = [];
+        this.providers = [];
+        this.currentMarketType = 'a_share';
         this.chart = null;
         this.refreshIntervals = {
             market: null,
             portfolio: null,
             trades: null
         };
+        this.marketStatus = null;
+        this.watchlist = [];
+        this.instrumentOptions = [];
+        this.currencyCode = 'CNY';
+        this.currencySymbol = '¥';
+        this.defaultWatchlist = ['600519.SH', '600036.SH', '000001.SZ', '300750.SZ'];
         this.isChinese = this.detectLanguage();
         this.init();
     }
@@ -18,43 +27,33 @@ class TradingApp {
         return lang.toLowerCase().includes('zh');
     }
 
-    formatPnl(value, isPnl = false) {
-        // Format profit/loss value based on language preference
-        if (!isPnl || value === 0) {
-            return `$${Math.abs(value).toFixed(2)}`;
+    formatCurrency(value, { currencySymbol } = {}) {
+        const symbol = currencySymbol || this.currencySymbol || '¥';
+        const numeric = Number(value);
+        if (Number.isNaN(numeric)) {
+            return `${symbol}0.00`;
         }
-
-        const absValue = Math.abs(value);
-        const formatted = `$${absValue.toFixed(2)}`;
-
-        if (this.isChinese) {
-            // Chinese convention: red for profit (positive), show + sign
-            if (value > 0) {
-                return `+${formatted}`;
-            } else {
-                return `-${formatted}`;
-            }
-        } else {
-            // Default: show sign for positive values
-            if (value > 0) {
-                return `+${formatted}`;
-            }
-            return formatted;
-        }
+        const sign = numeric < 0 ? '-' : '';
+        return `${sign}${symbol}${Math.abs(numeric).toFixed(2)}`;
     }
 
-    getPnlClass(value, isPnl = false) {
-        // Return CSS class based on profit/loss and language preference
-        if (!isPnl || value === 0) {
-            return '';
+    formatPnl(value, { currencySymbol } = {}) {
+        const symbol = currencySymbol || this.currencySymbol || '¥';
+        const numeric = Number(value) || 0;
+        const base = `${symbol}${Math.abs(numeric).toFixed(2)}`;
+        if (numeric === 0) {
+            return `${symbol}0.00`;
         }
+        return numeric > 0 ? `+${base}` : `-${base}`;
+    }
 
-        if (value > 0) {
-            // In Chinese: positive (profit) should be red
-            return this.isChinese ? 'positive' : 'positive';
-        } else if (value < 0) {
-            // In Chinese: negative (loss) should not be red
-            return this.isChinese ? 'negative' : 'negative';
+    getPnlClass(value) {
+        const numeric = Number(value) || 0;
+        if (numeric > 0) {
+            return 'positive';
+        }
+        if (numeric < 0) {
+            return 'negative';
         }
         return '';
     }
@@ -62,8 +61,9 @@ class TradingApp {
     init() {
         this.initEventListeners();
         this.loadModels();
-        this.loadMarketPrices();
+        this.loadMarketOverview();
         this.startRefreshCycles();
+        this.preloadInstrumentOptions();
         // Check for updates after initialization (with delay)
         setTimeout(() => this.checkForUpdates(true), 3000);
     }
@@ -87,6 +87,10 @@ class TradingApp {
         document.getElementById('cancelBtn').addEventListener('click', () => this.hideModal());
         document.getElementById('submitBtn').addEventListener('click', () => this.submitModel());
         document.getElementById('modelProvider').addEventListener('change', (e) => this.updateModelOptions(e.target.value));
+        const refreshInstrumentBtn = document.getElementById('refreshInstrumentBtn');
+        if (refreshInstrumentBtn) {
+            refreshInstrumentBtn.addEventListener('click', () => this.loadInstrumentOptions(true));
+        }
 
         // Refresh
         document.getElementById('refreshBtn').addEventListener('click', () => this.refresh());
@@ -106,12 +110,18 @@ class TradingApp {
     async loadModels() {
         try {
             const response = await fetch('/api/models');
-            const models = await response.json();
+            const data = await response.json();
+            const models = Array.isArray(data) ? data : [];
+            this.models = models;
             this.renderModels(models);
+            this.updateWatchlist(models);
+            this.loadMarketOverview();
 
             // Initialize with aggregated view if no model is selected
             if (models.length > 0 && !this.currentModelId && !this.isAggregatedView) {
-                this.showAggregatedView();
+                await this.showAggregatedView();
+            } else if (this.currentModelId && !this.isAggregatedView) {
+                await this.loadModelData();
             }
         } catch (error) {
             console.error('Failed to load models:', error);
@@ -121,37 +131,52 @@ class TradingApp {
     renderModels(models) {
         const container = document.getElementById('modelList');
 
-        if (models.length === 0) {
+        if (!models || models.length === 0) {
             container.innerHTML = '<div class="empty-state">暂无模型</div>';
             return;
         }
 
-        // Add aggregated view option at the top
         let html = `
             <div class="model-item ${this.isAggregatedView ? 'active' : ''}"
                  onclick="app.showAggregatedView()">
                 <div class="model-name">
-                    <i class="bi bi-bar-chart-fill"></i> 聚合视图
+                    <i class="bi bi-collection"></i> 全部模型汇总
                 </div>
                 <div class="model-info">
-                    <span>所有模型汇总</span>
+                    <span>${models.length} 个模型</span>
                 </div>
             </div>
         `;
 
-        // Add individual models
-        html += models.map(model => `
-            <div class="model-item ${model.id === this.currentModelId && !this.isAggregatedView ? 'active' : ''}"
-                 onclick="app.selectModel(${model.id})">
-                <div class="model-name">${model.name}</div>
-                <div class="model-info">
-                    <span>${model.model_name}</span>
-                    <span class="model-delete" onclick="event.stopPropagation(); app.deleteModel(${model.id})">
-                        <i class="bi bi-trash"></i>
-                    </span>
+        html += models.map(model => {
+            const isActive = model.id === this.currentModelId && !this.isAggregatedView;
+            const providerLabel = model.provider_name || model.model_name || '—';
+            const instrumentList = Array.isArray(model.instruments)
+                ? model.instruments
+                : (typeof model.instrument_list === 'string' ? model.instrument_list.split(',') : []);
+            const instruments = instrumentList
+                .map(item => String(item).trim().toUpperCase())
+                .filter((item, index, arr) => item && arr.indexOf(item) === index);
+            const badges = instruments.slice(0, 4).map(item => `<span class="model-ticker">${item}</span>`).join('');
+            const moreTag = instruments.length > 4 ? `<span class="model-ticker">+${instruments.length - 4}</span>` : '';
+            const instrumentsHtml = instruments.length
+                ? `<div class="model-meta">${badges}${moreTag}</div>`
+                : '<div class="model-meta muted">未配置股票池</div>';
+
+            return `
+                <div class="model-item ${isActive ? 'active' : ''}"
+                     onclick="app.selectModel(${model.id})">
+                    <div class="model-name">${model.name}</div>
+                    <div class="model-info">
+                        <span>${providerLabel}</span>
+                        <span class="model-delete" onclick="event.stopPropagation(); app.deleteModel(${model.id})">
+                            <i class="bi bi-trash"></i>
+                        </span>
+                    </div>
+                    ${instrumentsHtml}
                 </div>
-            </div>
-        `).join('');
+            `;
+        }).join('');
 
         container.innerHTML = html;
     }
@@ -159,6 +184,9 @@ class TradingApp {
     async showAggregatedView() {
         this.isAggregatedView = true;
         this.currentModelId = null;
+        this.currentMarketType = 'a_share';
+        this.currencyCode = 'CNY';
+        this.currencySymbol = this.getCurrencySymbol(this.currencyCode);
         this.loadModels();
         await this.loadAggregatedData();
         this.hideTabsInAggregatedView();
@@ -167,6 +195,19 @@ class TradingApp {
     async selectModel(modelId) {
         this.currentModelId = modelId;
         this.isAggregatedView = false;
+
+        const model = this.models.find(item => item.id === modelId);
+        if (model) {
+            this.currentMarketType = (model.market_type || 'a_share').toLowerCase();
+            const currencyCode = (model.cash_currency || (this.currentMarketType === 'a_share' ? 'CNY' : 'USD')).toUpperCase();
+            this.currencyCode = currencyCode;
+            this.currencySymbol = this.getCurrencySymbol(currencyCode);
+        } else {
+            this.currentMarketType = 'a_share';
+            this.currencyCode = 'CNY';
+            this.currencySymbol = this.getCurrencySymbol(this.currencyCode);
+        }
+
         this.loadModels();
         await this.loadModelData();
         this.showTabsInSingleModelView();
@@ -176,17 +217,25 @@ class TradingApp {
         if (!this.currentModelId) return;
 
         try {
-            const [portfolio, trades, conversations] = await Promise.all([
+            const [portfolioResponse, trades, conversations] = await Promise.all([
                 fetch(`/api/models/${this.currentModelId}/portfolio`).then(r => r.json()),
                 fetch(`/api/models/${this.currentModelId}/trades?limit=50`).then(r => r.json()),
                 fetch(`/api/models/${this.currentModelId}/conversations?limit=20`).then(r => r.json())
             ]);
 
-            this.updateStats(portfolio.portfolio, false);
-            this.updateSingleModelChart(portfolio.account_value_history, portfolio.portfolio.total_value);
-            this.updatePositions(portfolio.portfolio.positions, false);
-            this.updateTrades(trades);
-            this.updateConversations(conversations);
+            const portfolio = portfolioResponse?.portfolio || {};
+            const history = portfolioResponse?.account_value_history || [];
+
+            this.currentMarketType = (portfolio.market_type || 'a_share').toLowerCase();
+            const currencyCode = (portfolio.cash_currency || (this.currentMarketType === 'a_share' ? 'CNY' : 'USD')).toUpperCase();
+            this.currencyCode = currencyCode;
+            this.currencySymbol = this.getCurrencySymbol(currencyCode);
+
+            this.updateStats(portfolio, { currencyCode });
+            this.updateSingleModelChart(history, portfolio.total_value);
+            this.updatePositions(portfolio.positions || [], { currencyCode });
+            this.updateTrades(trades || [], { currencyCode });
+            this.updateConversations(conversations || []);
         } catch (error) {
             console.error('Failed to load model data:', error);
         }
