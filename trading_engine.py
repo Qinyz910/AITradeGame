@@ -261,27 +261,37 @@ class TradingEngine:
         total_required = required_margin + trade_fee
         if total_required > portfolio['cash']:
             return {'coin': coin, 'error': 'Insufficient cash (including fees)', 'market_type': self.market_type}
+        quote_snapshot = market_state.get(coin, {}) or {}
+        is_suspended_flag = quote_snapshot.get('suspension')
+        if is_suspended_flag is None:
+            is_suspended_flag = quote_snapshot.get('is_suspended')
+        is_suspended_value = None if is_suspended_flag is None else bool(is_suspended_flag)
         self.db.update_position(
-            self.model_id,
-            coin,
-            quantity,
-            price,
-            leverage,
-            'long'
+            model_id=self.model_id,
+            coin=coin,
+            quantity=quantity,
+            avg_price=price,
+            leverage=leverage,
+            side='long',
+            market_type=self.market_type,
+            board=quote_snapshot.get('board'),
+            instrument_code=coin,
+            is_suspended=is_suspended_value
         )
         cash_after = portfolio['cash'] - total_required
         self.db.add_trade(
-            self.model_id,
-            coin,
-            'buy_to_enter',
-            quantity,
-            price,
-            leverage,
-            'long',
+            model_id=self.model_id,
+            coin=coin,
+            signal='buy_to_enter',
+            quantity=quantity,
+            price=price,
+            leverage=leverage,
+            side='long',
             pnl=0,
             fee=trade_fee,
             market_type=self.market_type,
-            board=market_state.get(coin, {}).get('board'),
+            board=quote_snapshot.get('board'),
+            instrument_code=coin,
             fee_details={'total': trade_fee},
             metadata={'execution': 'market'},
             cash_balance=cash_after
@@ -317,27 +327,37 @@ class TradingEngine:
         total_required = required_margin + trade_fee
         if total_required > portfolio['cash']:
             return {'coin': coin, 'error': 'Insufficient cash (including fees)', 'market_type': self.market_type}
+        quote_snapshot = market_state.get(coin, {}) or {}
+        is_suspended_flag = quote_snapshot.get('suspension')
+        if is_suspended_flag is None:
+            is_suspended_flag = quote_snapshot.get('is_suspended')
+        is_suspended_value = None if is_suspended_flag is None else bool(is_suspended_flag)
         self.db.update_position(
-            self.model_id,
-            coin,
-            quantity,
-            price,
-            leverage,
-            'short'
+            model_id=self.model_id,
+            coin=coin,
+            quantity=quantity,
+            avg_price=price,
+            leverage=leverage,
+            side='short',
+            market_type=self.market_type,
+            board=quote_snapshot.get('board'),
+            instrument_code=coin,
+            is_suspended=is_suspended_value
         )
         cash_after = portfolio['cash'] - total_required
         self.db.add_trade(
-            self.model_id,
-            coin,
-            'sell_to_enter',
-            quantity,
-            price,
-            leverage,
-            'short',
+            model_id=self.model_id,
+            coin=coin,
+            signal='sell_to_enter',
+            quantity=quantity,
+            price=price,
+            leverage=leverage,
+            side='short',
             pnl=0,
             fee=trade_fee,
             market_type=self.market_type,
-            board=market_state.get(coin, {}).get('board'),
+            board=quote_snapshot.get('board'),
+            instrument_code=coin,
             fee_details={'total': trade_fee},
             metadata={'execution': 'market'},
             cash_balance=cash_after
@@ -381,19 +401,26 @@ class TradingEngine:
         trade_amount = quantity * current_price
         trade_fee = trade_amount * self.trade_fee_rate
         net_pnl = gross_pnl - trade_fee
-        self.db.close_position(self.model_id, coin, side)
+        self.db.close_position(
+            model_id=self.model_id,
+            coin=coin,
+            side=side,
+            market_type=self.market_type
+        )
+        quote_snapshot = market_state.get(coin, {}) or {}
         self.db.add_trade(
-            self.model_id,
-            coin,
-            'close_position',
-            quantity,
-            current_price,
-            leverage,
-            side,
+            model_id=self.model_id,
+            coin=coin,
+            signal='close_position',
+            quantity=quantity,
+            price=current_price,
+            leverage=leverage,
+            side=side,
             pnl=net_pnl,
             fee=trade_fee,
             market_type=self.market_type,
-            board=market_state.get(coin, {}).get('board'),
+            board=quote_snapshot.get('board'),
+            instrument_code=coin,
             fee_details={'total': trade_fee},
             metadata={'execution': 'market'},
             cash_balance=portfolio['cash'] + (trade_amount - trade_fee)
@@ -467,16 +494,30 @@ class TradingEngine:
             'next_sellable_date': next_sellable_date,
             'market_type': self.market_type
         })
+        instrument_code_value = quote.get('instrument_code') if isinstance(quote, dict) else None
+        instrument_code_value = instrument_code_value or coin
+        if instrument_code_value is not None:
+            instrument_code_value = str(instrument_code_value).strip().upper()
+        is_suspended_flag = None
+        if isinstance(quote, dict):
+            is_suspended_flag = quote.get('suspension')
+            if is_suspended_flag is None:
+                is_suspended_flag = quote.get('is_suspended')
+        is_suspended_value = None if is_suspended_flag is None else bool(is_suspended_flag)
         self.db.update_position(
-            self.model_id,
-            coin,
-            new_quantity,
-            new_avg_price,
-            1,
-            'long',
+            model_id=self.model_id,
+            coin=coin,
+            quantity=new_quantity,
+            avg_price=new_avg_price,
+            leverage=1,
+            side='long',
             metadata=position_metadata,
             last_buy_date=last_buy_date,
-            next_sellable_date=next_sellable_date
+            next_sellable_date=next_sellable_date,
+            instrument_code=instrument_code_value,
+            market_type=self.market_type,
+            board=quote.get('board') if isinstance(quote, dict) else None,
+            is_suspended=is_suspended_value
         )
         cash_after = portfolio['cash'] - total_required
         trade_metadata = {
@@ -493,18 +534,24 @@ class TradingEngine:
             'stamp_duty': fees['stamp_duty'],
             'total': fees['total']
         }
+        raw_fees = fees.get('raw', {})
         self.db.add_trade(
-            self.model_id,
-            coin,
-            'buy_to_enter',
-            normalized_quantity,
-            execution_price,
-            1,
-            'long',
+            model_id=self.model_id,
+            coin=coin,
+            signal='buy_to_enter',
+            quantity=normalized_quantity,
+            price=execution_price,
+            leverage=1,
+            side='long',
             pnl=0,
             fee=total_fee_raw,
             market_type=self.market_type,
             board=quote.get('board'),
+            instrument_code=instrument_code_value,
+            trade_date=trade_datetime.date().isoformat(),
+            commission=raw_fees.get('commission'),
+            stamp_duty=raw_fees.get('stamp_duty'),
+            transfer_fee=raw_fees.get('transfer_fee'),
             fee_details=fee_details_record,
             metadata=trade_metadata,
             cash_balance=cash_after
@@ -562,6 +609,16 @@ class TradingEngine:
         if normalized_quantity <= 0:
             return {'coin': coin, 'error': 'Invalid sell quantity', 'market_type': self.market_type}
         quote = market_state.get(coin, {})
+        instrument_code_value = quote.get('instrument_code') if isinstance(quote, dict) else None
+        instrument_code_value = instrument_code_value or coin
+        if instrument_code_value is not None:
+            instrument_code_value = str(instrument_code_value).strip().upper()
+        is_suspended_flag = None
+        if isinstance(quote, dict):
+            is_suspended_flag = quote.get('suspension')
+            if is_suspended_flag is None:
+                is_suspended_flag = quote.get('is_suspended')
+        is_suspended_value = None if is_suspended_flag is None else bool(is_suspended_flag)
         target_price = decision.get('price')
         try:
             execution_price = float(target_price) if target_price else float(quote.get('price', 0))
@@ -606,21 +663,31 @@ class TradingEngine:
         net_pnl_after_entry = net_pnl_before_entry - allocated_entry_fee
         remaining_quantity = max(position_quantity - normalized_quantity, 0)
         if remaining_quantity <= 0:
-            self.db.close_position(self.model_id, coin, 'long')
+            self.db.close_position(
+                model_id=self.model_id,
+                coin=coin,
+                side='long',
+                instrument_code=instrument_code_value,
+                market_type=self.market_type
+            )
         else:
             remaining_quantity = float(int(round(remaining_quantity)))
             remaining_entry_fee = max(entry_fee_total - allocated_entry_fee, 0)
             metadata['entry_fee_total'] = remaining_entry_fee
             self.db.update_position(
-                self.model_id,
-                coin,
-                remaining_quantity,
-                entry_price,
-                1,
-                'long',
+                model_id=self.model_id,
+                coin=coin,
+                quantity=remaining_quantity,
+                avg_price=entry_price,
+                leverage=1,
+                side='long',
                 metadata=metadata,
                 last_buy_date=position.get('last_buy_date'),
-                next_sellable_date=position.get('next_sellable_date')
+                next_sellable_date=position.get('next_sellable_date'),
+                instrument_code=instrument_code_value,
+                market_type=self.market_type,
+                board=quote.get('board') if isinstance(quote, dict) else None,
+                is_suspended=is_suspended_value
             )
         cash_after = portfolio['cash'] + (trade_amount - total_fee_raw)
         trade_metadata = {
@@ -639,18 +706,24 @@ class TradingEngine:
             'stamp_duty': fees['stamp_duty'],
             'total': fees['total']
         }
+        raw_fees = fees.get('raw', {})
         self.db.add_trade(
-            self.model_id,
-            coin,
-            'close_position',
-            normalized_quantity,
-            execution_price,
-            1,
-            'long',
+            model_id=self.model_id,
+            coin=coin,
+            signal='close_position',
+            quantity=normalized_quantity,
+            price=execution_price,
+            leverage=1,
+            side='long',
             pnl=net_pnl_after_entry,
             fee=total_fee_raw,
             market_type=self.market_type,
             board=quote.get('board'),
+            instrument_code=instrument_code_value,
+            trade_date=trade_datetime.date().isoformat(),
+            commission=raw_fees.get('commission'),
+            stamp_duty=raw_fees.get('stamp_duty'),
+            transfer_fee=raw_fees.get('transfer_fee'),
             fee_details=fee_details_record,
             metadata=trade_metadata,
             cash_balance=cash_after
@@ -783,4 +856,9 @@ class TradingEngine:
         for pos in portfolio.get('positions', []):
             if pos['coin'] == coin and (pos.get('side') or 'long') == side:
                 return pos
-        return self.db.get_position(self.model_id, coin, side)
+        return self.db.get_position(
+            self.model_id,
+            coin=coin,
+            side=side,
+            market_type=self.market_type
+        )
