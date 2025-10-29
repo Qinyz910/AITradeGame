@@ -8,6 +8,6 @@ services:
     volumes:
       - ./data:/app/data
     environment:
-      - DATABASE_PATH=/app/data/trading_bot.db
+      - DATABASE_PATH=/app/data/AITradeGame.db
     restart: unless-stopped
 

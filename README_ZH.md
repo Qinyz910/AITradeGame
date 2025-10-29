@@ -1,4 +1,4 @@
-# AITradeGame - nof1.ai 的开源替代方案
+# AITradeGame - 面向 A 股市场的 AI 交易模拟器
 
 [English](README.md) | [中文](README_ZH.md)
 
@@ -6,55 +6,49 @@
 [![Flask](https://img.shields.io/badge/flask-3.0+-green.svg)](https://flask.palletsprojects.com/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-AITradeGame 是支持本地和在线双版本的AI 交易模拟平台。
+AITradeGame 是专注于中国大陆 A 股市场的开源交易模拟器。它将大型语言模型（LLM）的推理能力与沪深股市行情数据结合，帮助你在符合监管约束的环境中快速搭建、测试并对比基于 AI 的交易策略。项目同时提供本地桌面模式与带排行榜的在线体验。
 
-提供在线版本，联机互动，查看交易排行。
+## 主要特性
 
-本地版本所有数据保留在您的计算机上，无需云端，无需追踪。
+### 为 A 股而生
+- 基于 AkShare 的实时行情、基本面与涨跌停价格
+- 了解交易日历、节假日与 T+1 交割限制
+- 贴合内地交易所规则的手续费与最小交易单位仿真
+- 自动补充持仓的板块、停牌、涨跌停等信息
 
-并有Windows 一键独立可执行文件，无需安装即可运行。
+### AI 策略工作台
+- 多家 API 提供方统一管理，可自动拉取 OpenAI 协议模型清单
+- 可配置的交易频率与费率，让策略调度更灵活
+- 聚合看板对比多模型表现，掌握收益曲线与风险指标
+- 基于 ECharts 的可视化、历史净值与交易日志
 
-## 功能特性
-
-### 桌面版（自托管）
-
-基于大语言模型的 AI 驱动交易策略，兼容 OpenAI、DeepSeek、Claude 等模型。支持杠杆投资组合管理，使用 ECharts 可视化。100% 隐私，所有数据存储在本地数据库中。支持交易费用配置，模拟真实交易环境。
-
-**新增功能：**
-- API提供方管理：统一管理多个 AI 服务提供方的 API 配置
-- 智能模型选择：为每个提供方自动获取可用模型列表
-- 聚合视图：查看所有模型的汇总资产和表现对比
-- A股行情数据：通过 AkShare 获取实时行情、涨跌停价、基本面信息与交易日历
-- 系统设置：可配置交易频率和交易费率
-
-### 在线版（公开部署）
-
-添加排行榜功能，可与全球 AI 爱好者竞争。具有实时排名显示，可以提供实时性能对比和分析。还实现了自动同步和后台运行，可在多设备间无缝切换体验。
+### 部署方式灵活
+- 本地桌面版本，数据全部存储在 SQLite，守护隐私
+- 可选的 Web 托管版本，支持后台运行与排行榜
+- 提供容器镜像，方便接入现有基础设施
 
 ## 快速开始
 
-### 使用在线版本
+### 在线体验
+访问 https://aitradegame.com 即可直接体验界面与排行榜，无需本地安装。
 
-访问 https://aitradegame.com 启动在线版本，无需任何安装。
+### 桌面（本地）部署
+1. 克隆本仓库
+2. 安装依赖：`pip install -r requirements.txt`
+3. 启动应用：`python app.py`
+4. 打开浏览器访问 http://localhost:5000 ，开始配置提供方和模型
 
-### 桌面版本
-
-从 GitHub 的 releases 页面下载 AITradeGame.exe。双击可执行文件运行。软件将自动打开界面。开始添加 AI 模型并开始交易。https://github.com/chadyi/AITradeGame/releases/tag/main
-
-或者，从 GitHub 克隆仓库。使用 pip install -r requirements.txt 安装依赖。使用 python app.py 运行应用程序，然后访问 http://localhost:5000。
-
-> 注意：AkShare 的 A 股行情服务依赖 pandas 与 numpy。requirements.txt 已包含这些版本，请确保当前环境可以正常安装或构建相应的轮子后再启动应用。
+> AkShare 依赖 pandas 与 numpy。准备全新 Python 环境时，请确保能够安装对应的 wheel（或具备从源码构建的能力），再启动应用。
 
 ### Docker 部署
-
-您也可以使用 Docker 运行 AITradeGame：
+同样可以借助 Docker 运行 AITradeGame：
 
 **使用 docker-compose（推荐）：**
 ```bash
 # 构建并启动容器
 docker-compose up -d
 
-# 访问应用程序 http://localhost:5000
+# 访问应用 http://localhost:5000
 ```
 
 **直接使用 docker：**
@@ -65,63 +59,70 @@ docker build -t aitradegame .
 # 运行容器
 docker run -d -p 5000:5000 -v $(pwd)/data:/app/data aitradegame
 
-# 访问应用程序 http://localhost:5000
+# 访问应用 http://localhost:5000
 ```
 
-系统会自动创建 data 目录来存储 SQLite 数据库。要停止容器，请运行 `docker-compose down`。
+`data/` 目录用于存放 SQLite 数据库（`AITradeGame.db`）。完成后可通过 `docker-compose down` 停止服务。
 
-## 配置
+## 配置指引
 
-### API提供方配置
-首先添加 AI 服务提供方：
-1. 点击"API提供方"按钮
-2. 输入提供方名称、API地址和密钥
-3. 可以手动输入可用模型，或点击"获取模型"自动获取
-4. 点击保存完成配置
+### 配置 AI 提供方
+1. 点击顶部的 **API Provider**
+2. 输入名称、API 基地址与密钥
+3. 可自动获取模型列表，也可以手动录入
+4. 保存后即可在所有模型中复用该提供方
 
 ### 添加交易模型
-配置好提供方后，添加交易模型：
-1. 点击"添加模型"按钮
-2. 选择已经配置的 API 提供方
-3. 从下拉列表中选择具体的模型
-4. 输入模型显示名称和初始资金
-5. 点击提交开始交易
+1. 点击 **Add Model**
+2. 选择已配置的提供方
+3. 选择模型，设置展示名称与初始资金（人民币）
+4. 将市场类型设置为 **A-share**，确认后即开始模拟循环
 
 ### 系统设置
-点击右上角"设置"按钮，可以配置：
-- 交易频率：控制AI决策的时间间隔（1-1440分钟）
-- 交易费率：每笔交易的手续费率（默认0.1%）
+通过 **Settings** 面板可以：
+- 调整 **Trading Frequency**，控制策略决策间隔（1–1440 分钟）
+- 设置 **Trading Fee Rate**，默认万一（0.1%）单边手续费
+- A 股模式下会自动执行 100 股一手、禁止卖空等约束
 
-## 支持的 AI 模型
+### 进阶配置（可选）
+`config.example.py` 展示了默认行为，可用于：
+- 修改数据库文件位置
+- 开关自动交易与自定义轮询间隔
+- 定义默认的 A 股自选列表（`A_SHARE_SYMBOLS`）
+- 调整 AkShare 行情与基本面缓存时长
 
-支持所有兼容 OpenAI 的 API。这包括 OpenAI 模型如 gpt-4 和 gpt-3.5-turbo，DeepSeek 模型包括 deepseek-chat，通过 OpenRouter 的 Claude 模型，以及任何其他兼容 OpenAI API 格式的服务。更多协议在进一步添加中。
+如需长期覆盖配置，将其复制为 `config.py` 并按需修改。
 
-## 使用方法
+## 开发说明
 
-通过运行 AITradeGame.exe 或 python app.py 启动服务器。通过 http://localhost:5000 的 Web 界面添加 AI 模型配置。系统根据您的配置自动开始交易模拟。每次开仓和平仓都会按设定的费率收取交易费用，确保AI策略在真实成本环境下运行。
+开发需要 Python 3.9 及以上版本，并需连接网络以访问 AkShare 与 LLM API。安装依赖：
+
+```bash
+pip install -r requirements.txt
+```
+
+### 验证清单
+提交文档或配置改动前，请执行以下关键字扫描，确保共享模板中不会重新出现非 A 股术语：
+
+```bash
+grep -R --include="config*.py" --include="docker-compose.yml" --include="Dockerfile" \
+     --include="CHANGELOG.md" -n "crypto" .
+grep -R --include="config*.py" --include="docker-compose.yml" --include="Dockerfile" \
+     --include="CHANGELOG.md" -n "coin" .
+```
+
+在仅包含 A 股内容的情况下，这两条命令都不应返回任何结果。
 
 ## 隐私与安全
-
-所有数据都存储在可执行文件同一目录中的 AITradeGame.db SQLite 文件中。除了您指定的 AI API 端点外，不联系任何外部服务器。不需要用户账户或登录，一切都在本地运行。
-
-## 开发
-
-开发需要 Python 3.9 或更高版本。需要互联网连接以获取市场数据和 AI API 调用。
-
-安装所有依赖项：pip install -r requirements.txt
+所有数据均保存于本地的 `AITradeGame.db` SQLite 文件中，除非你主动配置外部的 AI 提供方。系统不创建账户，也不会回传任何隐私信息。
 
 ## 贡献
-
-欢迎社区贡献。
+欢迎社区贡献！请查阅 [CONTRIBUTING.md](CONTRIBUTING.md) 获取详细规范。
 
 ## 免责声明
-
-这是一个模拟交易平台，旨在测试 AI 模型和策略。它不是真实交易，也不涉及实际资金。在做出投资决策之前，请务必进行自己的研究和分析。不提供关于交易结果或 AI 性能的任何保证。
+AITradeGame 仅用于策略研究与教学实验，不会执行真实交易，也不会接触真实资金。投资前请务必自行做好风险评估。
 
 ## 相关链接
-
-带排行榜和社交功能的在线版本：https://aitradegame.com
-
-桌面构建和发布版本：https://github.com/chadyi/AITradeGame/releases/tag/main
-
-源代码仓库：https://github.com/chadyi/AITradeGame
+- 带排行榜的在线版本：https://aitradegame.com
+- 桌面版下载：https://github.com/chadyi/AITradeGame/releases/tag/main
+- 源码仓库：https://github.com/chadyi/AITradeGame
