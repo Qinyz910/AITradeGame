@@ -1,4 +1,4 @@
-# AITradeGame - Open Source AI Trading Simulator
+# AITradeGame - AI-Powered A-Share Trading Simulator
 
 [English](README.md) | [中文](README_ZH.md)
 
@@ -6,47 +6,41 @@
 [![Flask](https://img.shields.io/badge/flask-3.0+-green.svg)](https://flask.palletsprojects.com/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-AITradeGame is an AI trading simulator that supports both local and online versions.
+AITradeGame is an open-source trading simulator dedicated to mainland China's A-share markets. It blends large language model (LLM) reasoning with Shanghai and Shenzhen equity data so you can prototype, test, and compare AI-driven strategies in a realistic, regulation-aware environment. The project ships with a local-first desktop mode and an optional hosted experience with leaderboards.
 
-Provides an online version with interactive features and leaderboards.
+## Key Features
 
-Local version stores all data on your computer, no cloud storage, no tracking.
+### Purpose-built for A-shares
+- Real-time A-share pricing, fundamentals, and limit prices powered by AkShare
+- Market calendar awareness including trading sessions, holidays, and T+1 settlement windows
+- Fee and lot-size simulation that reflects mainland exchange rules
+- Automatic enrichment of portfolio positions with board metadata, suspension status, and limits
 
-Includes a Windows one-click standalone executable that runs without installation.
+### AI Strategy Workbench
+- Multi-provider API management with automatic model discovery for OpenAI-compatible services
+- Strategy orchestration with configurable trading cadence and fee structure
+- Aggregated dashboard for performance comparison across multiple AI models
+- ECharts-powered analytics, historical equity curves, and trade logs
 
-## Features
-
-### Desktop Version (Local)
-
-AI-driven trading strategies based on large language models, compatible with OpenAI, DeepSeek, Claude, and other models. Leveraged portfolio management with ECharts visualizations. 100% privacy with all data stored in local database. Trading fee configuration supported to simulate real trading environment.
-
-**Latest Features:**
-- API Provider Management: Unified management of multiple AI service provider API configurations
-- Smart Model Selection: Automatically fetch available model lists for each provider
-- Aggregated View: View aggregated assets and performance comparison across all models
-- A-share Market Data: Real-time mainland China quotes, fundamentals, limit prices, and trading calendar via AkShare
-- System Settings: Configurable trading frequency and fee rates
-
-### Online Version (Public)
-
-Leaderboard functionality to compete with AI enthusiasts worldwide. Real-time rankings display providing performance comparisons and analysis. Auto-sync and background operation enabling seamless multi-device experience.
+### Deployment Options
+- Local desktop build with SQLite persistence — no cloud storage required
+- Web-based deployment with background execution and optional leaderboard
+- Container image for easy integration into existing infrastructure
 
 ## Quick Start
 
-### Try Online Version
+### Online Playground
+Launch the hosted playground at https://aitradegame.com to explore the interface and leaderboard without installing anything locally.
 
-Launch the online version at https://aitradegame.com without any installation.
+### Desktop (Local) Setup
+1. Clone this repository
+2. Install dependencies: `pip install -r requirements.txt`
+3. Start the app: `python app.py`
+4. Open http://localhost:5000 in your browser to begin configuring providers and models
 
-### Desktop Version
-
-Download AITradeGame.exe from GitHub releases. Double-click the executable to run. The interface will open automatically. Start adding AI models and begin trading.
-
-Alternatively, clone the repository from GitHub. Install dependencies with pip install -r requirements.txt. Run the application with python app.py and visit http://localhost:5000.
-
-> Note: The AkShare-powered A-share data service depends on pandas and numpy. The requirements file installs compatible versions automatically; make sure your Python environment can build or install those wheels before launching the app.
+> AkShare relies on pandas and numpy. When preparing a clean Python environment, ensure compatible wheels are available (or that you can build them from source) before running the application.
 
 ### Docker Deployment
-
 You can also run AITradeGame using Docker:
 
 **Using docker-compose (recommended):**
@@ -68,60 +62,67 @@ docker run -d -p 5000:5000 -v $(pwd)/data:/app/data aitradegame
 # Access the application at http://localhost:5000
 ```
 
-The data directory will be created automatically to store the SQLite database. To stop the container, run `docker-compose down`.
+The `data/` directory stores the SQLite database (`AITradeGame.db`). Stop the stack with `docker-compose down` when you are done.
 
 ## Configuration
 
-### API Provider Setup
-First, add AI service providers:
-1. Click the "API Provider" button
-2. Enter provider name, API URL, and API key
-3. Manually input available models or click "Fetch Models" to auto-fetch
-4. Click save to complete configuration
+### AI Provider Setup
+1. Click **API Provider** in the header
+2. Provide a name, API base URL, and API key
+3. Fetch available models automatically or add them manually
+4. Save to make the provider available to all models
 
 ### Adding Trading Models
-After configuring providers, add trading models:
-1. Click the "Add Model" button
-2. Select a configured API provider
-3. Choose a specific model from the dropdown
-4. Enter display name and initial capital
-5. Click submit to start trading
+1. Click **Add Model**
+2. Pick an existing AI provider
+3. Choose a model, set display name, and allocate initial capital (CNY)
+4. Select **A-share** as the market type and confirm to start the simulation loop
 
 ### System Settings
-Click the "Settings" button to configure:
-- Trading Frequency: Control AI decision interval (1-1440 minutes)
-- Trading Fee Rate: Commission rate per trade (default 0.1%)
+Use the **Settings** dialog to control:
+- **Trading Frequency:** minutes between AI decisions (1–1440)
+- **Trading Fee Rate:** commission per trade leg (0.1% by default)
+- **Lot Controls:** when running in A-share mode the engine enforces 100-share lots and disables short selling
 
-## Supported AI Models
+### Advanced Configuration (optional)
+An example configuration file is provided in `config.example.py`. It mirrors the default behaviour and demonstrates how to:
+- Override database location
+- Toggle automatic trading and tune the trading interval
+- Define a default A-share watchlist (`A_SHARE_SYMBOLS`)
+- Adjust AkShare caching windows for quotes and fundamentals
 
-Supports all OpenAI-compatible APIs. This includes OpenAI models like gpt-4 and gpt-3.5-turbo, DeepSeek models including deepseek-chat, Claude models through OpenRouter, and any other services compatible with OpenAI API format. More protocols are being added.
-
-## Usage
-
-Start the server by running AITradeGame.exe or python app.py. Add AI model configuration through the web interface at http://localhost:5000. The system automatically begins trading simulation based on your configuration. Trading fees are charged for each open and close position according to the set rate, ensuring AI strategies operate under realistic cost conditions.
-
-## Privacy and Security
-
-All data is stored in the AITradeGame.db SQLite file in the same directory as the executable. No external servers are contacted except your specified AI API endpoints. No user accounts or login required - everything runs locally.
+Copy the file to `config.py` and adapt it to your deployment when you need persistent overrides.
 
 ## Development
 
-Development requires Python 3.9 or later. Internet connection is needed for market data and AI API calls.
+Development requires Python 3.9 or later plus an internet connection for AkShare and LLM API calls. Install dependencies with:
 
-Install all dependencies with: pip install -r requirements.txt
+```bash
+pip install -r requirements.txt
+```
+
+### Verification Checklist
+Before shipping documentation or configuration updates, run the keyword scan below to ensure no non A-share terminology slips back into shared templates:
+
+```bash
+grep -R --include="config*.py" --include="docker-compose.yml" --include="Dockerfile" \
+     --include="CHANGELOG.md" -n "crypto" .
+grep -R --include="config*.py" --include="docker-compose.yml" --include="Dockerfile" \
+     --include="CHANGELOG.md" -n "coin" .
+```
+
+Both commands should return no matches when the repository remains A-share only.
+
+## Privacy & Security
+All data stays on your machine in the `AITradeGame.db` SQLite file unless you opt into external AI providers. The application does not create user accounts or phone home.
 
 ## Contributing
-
-Community contributions are welcome.
+Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ## Disclaimer
-
-This is a simulated trading platform for testing AI models and strategies. It is not real trading and no actual money is involved. Always conduct your own research and analysis before making investment decisions. No warranties are provided regarding trading outcomes or AI performance.
+AITradeGame is a simulation environment for research and experimentation. It does not execute real trades or handle real capital. Always perform independent due diligence before investing in financial markets.
 
 ## Links
-
-Online version with leaderboard and social features: https://aitradegame.com
-
-Desktop builds and releases: https://github.com/chadyi/AITradeGame/releases/tag/main
-
-Source code repository: https://github.com/chadyi/AITradeGame
+- Online leaderboard & social features: https://aitradegame.com
+- Desktop binaries: https://github.com/chadyi/AITradeGame/releases/tag/main
+- Source repository: https://github.com/chadyi/AITradeGame
