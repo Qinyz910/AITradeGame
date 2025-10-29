@@ -6,7 +6,7 @@ import json
 import re
 from datetime import datetime, date
 from trading_engine import TradingEngine
-from market_data import MarketDataFetcher
+from market_data import MarketDataService
 from ai_trader import AITrader
 from database import Database
 from version import __version__, __github_owner__, __repo__, GITHUB_REPO_URL, LATEST_RELEASE_URL
@@ -16,7 +16,7 @@ app = Flask(__name__)
 CORS(app)
 
 db = Database('AITradeGame.db')
-market_fetcher = MarketDataFetcher()
+market_fetcher = MarketDataService()
 market_calendar = MarketCalendar()
 trading_engines = {}
 auto_trading = True

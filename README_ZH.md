@@ -24,6 +24,7 @@ AITradeGame 是支持本地和在线双版本的AI 交易模拟平台。
 - API提供方管理：统一管理多个 AI 服务提供方的 API 配置
 - 智能模型选择：为每个提供方自动获取可用模型列表
 - 聚合视图：查看所有模型的汇总资产和表现对比
+- A股行情数据：通过 AkShare 获取实时行情、涨跌停价、基本面信息与交易日历
 - 系统设置：可配置交易频率和交易费率
 
 ### 在线版（公开部署）
@@ -41,6 +42,8 @@ AITradeGame 是支持本地和在线双版本的AI 交易模拟平台。
 从 GitHub 的 releases 页面下载 AITradeGame.exe。双击可执行文件运行。软件将自动打开界面。开始添加 AI 模型并开始交易。https://github.com/chadyi/AITradeGame/releases/tag/main
 
 或者，从 GitHub 克隆仓库。使用 pip install -r requirements.txt 安装依赖。使用 python app.py 运行应用程序，然后访问 http://localhost:5000。
+
+> 注意：AkShare 的 A 股行情服务依赖 pandas 与 numpy。requirements.txt 已包含这些版本，请确保当前环境可以正常安装或构建相应的轮子后再启动应用。
 
 ### Docker 部署
 
