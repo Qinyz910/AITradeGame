@@ -4,7 +4,7 @@ import time
 import threading
 import json
 import re
-from datetime import datetime
+from datetime import datetime, date
 from trading_engine import TradingEngine
 from market_data import MarketDataFetcher
 from ai_trader import AITrader
@@ -38,16 +38,35 @@ def _parse_timestamp(value):
 def _enrich_positions(positions, quotes, market_type):
     if market_type != 'a_share':
         return positions
+    status = market_calendar.get_market_status('a_share') if market_calendar else {}
+    server_time = status.get('server_time')
+    current_dt = _parse_timestamp(server_time) if server_time else datetime.now()
+    current_date = current_dt.date() if current_dt else datetime.now().date()
     for pos in positions:
         quote = quotes.get(pos['coin'], {})
-        pos['board'] = quote.get('board')
-        pos['suspension'] = quote.get('suspension', False)
-        pos['limit_up_price'] = quote.get('limit_up_price')
-        pos['limit_down_price'] = quote.get('limit_down_price')
+        metadata = pos.get('metadata') or {}
+        pos['board'] = pos.get('board') or metadata.get('board') or quote.get('board')
+        pos['suspension'] = quote.get('suspension', pos.get('suspension', False))
+        pos['limit_up_price'] = pos.get('limit_up_price') or metadata.get('limit_up_price') or quote.get('limit_up_price')
+        pos['limit_down_price'] = pos.get('limit_down_price') or metadata.get('limit_down_price') or quote.get('limit_down_price')
         pos['fundamentals'] = quote.get('fundamentals', {})
-        pos['is_st'] = quote.get('is_st', False)
-        ts = _parse_timestamp(pos.get('updated_at'))
-        pos['next_sellable_date'] = market_calendar.next_sellable_date('a_share', ts)
+        pos['is_st'] = quote.get('is_st', metadata.get('is_st', False))
+        stored_next = pos.get('next_sellable_date') or metadata.get('next_sellable_date')
+        if stored_next:
+            pos['next_sellable_date'] = stored_next
+        else:
+            ts = _parse_timestamp(pos.get('updated_at'))
+            pos['next_sellable_date'] = market_calendar.next_sellable_date('a_share', ts)
+        next_sellable = pos.get('next_sellable_date')
+        if next_sellable:
+            try:
+                ns_date = date.fromisoformat(next_sellable)
+                pos['t1_locked'] = current_date < ns_date
+            except ValueError:
+                pos['t1_locked'] = False
+        else:
+            pos['t1_locked'] = False
+        pos['entry_fee_total'] = metadata.get('entry_fee_total')
     return positions
 
 def _enrich_trades(trades, quotes, market_type):
@@ -55,12 +74,25 @@ def _enrich_trades(trades, quotes, market_type):
         return trades
     for trade in trades:
         quote = quotes.get(trade.get('coin'), {})
-        trade['board'] = quote.get('board')
-        trade['suspension'] = quote.get('suspension', False)
-        trade['limit_up_price'] = quote.get('limit_up_price')
-        trade['limit_down_price'] = quote.get('limit_down_price')
-        ts = _parse_timestamp(trade.get('timestamp'))
-        trade['next_sellable_date'] = market_calendar.next_sellable_date('a_share', ts)
+        metadata = trade.get('metadata') or {}
+        fee_details = trade.get('fee_details') or {}
+        trade['board'] = trade.get('board') or metadata.get('board') or quote.get('board')
+        trade['suspension'] = quote.get('suspension', trade.get('suspension', False))
+        trade['limit_up_price'] = trade.get('limit_up_price') or metadata.get('limit_up_price') or quote.get('limit_up_price')
+        trade['limit_down_price'] = trade.get('limit_down_price') or metadata.get('limit_down_price') or quote.get('limit_down_price')
+        next_sellable = metadata.get('next_sellable_date') or trade.get('next_sellable_date')
+        if next_sellable:
+            trade['next_sellable_date'] = next_sellable
+        else:
+            ts = _parse_timestamp(trade.get('timestamp'))
+            trade['next_sellable_date'] = market_calendar.next_sellable_date('a_share', ts)
+        trade['fee_details'] = fee_details
+        trade['commission'] = fee_details.get('commission')
+        trade['transfer_fee'] = fee_details.get('transfer_fee')
+        trade['stamp_duty'] = fee_details.get('stamp_duty')
+        trade['total_fee'] = fee_details.get('total', trade.get('fee'))
+        trade['allocated_entry_fee'] = metadata.get('allocated_entry_fee')
+        trade['net_pnl_before_entry_fee'] = metadata.get('net_pnl_before_entry_fee')
     return trades
 
 @app.route('/')
@@ -178,6 +210,28 @@ def add_model():
 
         cash_currency = data.get('cash_currency') or ('CNY' if market_type == 'a_share' else 'USD')
 
+        market_config = data.get('market_config') or {}
+        if market_type == 'a_share':
+            default_fees = {
+                'commission_rate': 0.0003,
+                'commission_min': 5,
+                'transfer_rate': 0.00001,
+                'stamp_duty_rate': 0.001
+            }
+            config_fees = market_config.get('fees') or {}
+            merged_fees = {**default_fees, **config_fees}
+            market_config = {
+                'lot_size': int(market_config.get('lot_size', 100) or 100),
+                'lot_step': int(market_config.get('lot_step', 100) or 100),
+                'allow_partial_final_lot': bool(market_config.get('allow_partial_final_lot', True)),
+                'price_limit_tolerance': float(market_config.get('price_limit_tolerance', 0) or 0),
+                'fees': merged_fees
+            }
+        else:
+            config_fees = market_config.get('fees') or {}
+            config_fees.setdefault('trade_fee_rate', TRADE_FEE_RATE)
+            market_config['fees'] = config_fees
+
         model_id = db.add_model(
             name=data['name'],
             provider_id=provider_id,
@@ -185,7 +239,8 @@ def add_model():
             initial_capital=float(data.get('initial_capital', 100000)),
             market_type=market_type,
             instruments=instruments,
-            cash_currency=cash_currency
+            cash_currency=cash_currency,
+            market_config=market_config
         )
 
         model = db.get_model(model_id)
@@ -197,6 +252,7 @@ def add_model():
             market_type=model.get('market_type', 'crypto'),
             instruments=model.get('instruments') or market_fetcher.get_default_instruments(model.get('market_type')),
             cash_currency=model.get('cash_currency', cash_currency),
+            market_config=model.get('market_config') or {},
             ai_trader=AITrader(
                 api_key=model['api_key'],
                 api_url=model['api_url'],
@@ -426,6 +482,7 @@ def execute_trading(model_id):
             market_type=market_type,
             instruments=instruments,
             cash_currency=cash_currency,
+            market_config=model.get('market_config') or {},
             ai_trader=AITrader(
                 api_key=provider['api_key'],
                 api_url=provider['api_url'],
@@ -687,6 +744,7 @@ def init_trading_engines():
                     market_type=market_type,
                     instruments=instruments,
                     cash_currency=cash_currency,
+                    market_config=model.get('market_config') or {},
                     ai_trader=AITrader(
                         api_key=provider['api_key'],
                         api_url=provider['api_url'],
