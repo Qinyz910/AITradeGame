@@ -3,10 +3,13 @@ Market data module - Binance API integration
 """
 import requests
 import time
-from typing import Dict, List
+from typing import Dict, List, Optional
+
+from a_share_data import AShareMarketData
+
 
 class MarketDataFetcher:
-    """Fetch real-time market data from Binance API"""
+    """Fetch real-time market data across supported markets"""
     
     def __init__(self):
         self.binance_base_url = "https://api.binance.com/api/v3"
@@ -35,19 +38,25 @@ class MarketDataFetcher:
         self._cache = {}
         self._cache_time = {}
         self._cache_duration = 5  # Cache for 5 seconds
+        self.a_share_fetcher = AShareMarketData()
     
-    def get_current_prices(self, coins: List[str]) -> Dict[str, float]:
-        """Get current prices from Binance API"""
-        # Check cache
-        cache_key = 'prices_' + '_'.join(sorted(coins))
+    def get_current_prices(self, instruments: List[str], market_type: str = 'crypto') -> Dict[str, Dict]:
+        """Get current market quotes for instruments"""
+        market_type = (market_type or 'crypto').lower()
+
+        if market_type == 'a_share':
+            return self.a_share_fetcher.get_quotes(instruments)
+
+        # Crypto default flow
+        cache_key = f"{market_type}_" + '_'.join(sorted(instruments))
         if cache_key in self._cache:
             if time.time() - self._cache_time[cache_key] < self._cache_duration:
                 return self._cache[cache_key]
         
-        prices = {}
+        prices: Dict[str, Dict] = {}
+        coins = [symbol for symbol in instruments if symbol in self.binance_symbols]
         
         try:
-            # Batch fetch Binance 24h ticker data
             symbols = [self.binance_symbols.get(coin) for coin in coins if coin in self.binance_symbols]
             
             if symbols:
@@ -65,16 +74,23 @@ class MarketDataFetcher:
                 # Parse data
                 for item in data:
                     symbol = item['symbol']
-                    # Find corresponding coin
                     for coin, binance_symbol in self.binance_symbols.items():
                         if binance_symbol == symbol:
                             prices[coin] = {
+                                'symbol': coin,
                                 'price': float(item['lastPrice']),
                                 'change_24h': float(item['priceChangePercent'])
                             }
                             break
             
-            # Update cache
+            for instrument in instruments:
+                if instrument not in prices:
+                    prices[instrument] = {
+                        'symbol': instrument,
+                        'price': prices.get(instrument, {}).get('price', 0) if instrument in prices else 0,
+                        'change_24h': 0
+                    }
+
             self._cache[cache_key] = prices
             self._cache_time[cache_key] = time.time()
             
@@ -82,10 +98,13 @@ class MarketDataFetcher:
             
         except Exception as e:
             print(f"[ERROR] Binance API failed: {e}")
-            # Fallback to CoinGecko
-            return self._get_prices_from_coingecko(coins)
+            prices = self._get_prices_from_coingecko(coins)
+            for instrument in instruments:
+                if instrument not in prices:
+                    prices[instrument] = {'symbol': instrument, 'price': 0, 'change_24h': 0}
+            return prices
     
-    def _get_prices_from_coingecko(self, coins: List[str]) -> Dict[str, float]:
+    def _get_prices_from_coingecko(self, coins: List[str]) -> Dict[str, Dict]:
         """Fallback: Fetch prices from CoinGecko"""
         try:
             coin_ids = [self.coingecko_mapping.get(coin, coin.lower()) for coin in coins]
@@ -107,6 +126,7 @@ class MarketDataFetcher:
                 coin_id = self.coingecko_mapping.get(coin, coin.lower())
                 if coin_id in data:
                     prices[coin] = {
+                        'symbol': coin,
                         'price': data[coin_id]['usd'],
                         'change_24h': data[coin_id].get('usd_24h_change', 0)
                     }
@@ -114,7 +134,7 @@ class MarketDataFetcher:
             return prices
         except Exception as e:
             print(f"[ERROR] CoinGecko fallback also failed: {e}")
-            return {coin: {'price': 0, 'change_24h': 0} for coin in coins}
+            return {coin: {'symbol': coin, 'price': 0, 'change_24h': 0} for coin in coins}
     
     def get_market_data(self, coin: str) -> Dict:
         """Get detailed market data from CoinGecko"""
@@ -204,3 +224,11 @@ class MarketDataFetcher:
             'price_change_7d': ((prices[-1] - prices[0]) / prices[0]) * 100 if prices[0] > 0 else 0
         }
 
+    def get_default_instruments(self, market_type: str = 'crypto') -> List[str]:
+        """Get default trading instruments for a market type"""
+        market_type = (market_type or 'crypto').lower()
+        if market_type == 'crypto':
+            return list(self.binance_symbols.keys())
+        if market_type == 'a_share':
+            return ['600519.SH', '600036.SH', '000001.SZ', '300750.SZ']
+        return []

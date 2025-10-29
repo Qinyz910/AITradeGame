@@ -10,15 +10,58 @@ from market_data import MarketDataFetcher
 from ai_trader import AITrader
 from database import Database
 from version import __version__, __github_owner__, __repo__, GITHUB_REPO_URL, LATEST_RELEASE_URL
+from market_calendar import MarketCalendar
 
 app = Flask(__name__)
 CORS(app)
 
 db = Database('AITradeGame.db')
 market_fetcher = MarketDataFetcher()
+market_calendar = MarketCalendar()
 trading_engines = {}
 auto_trading = True
 TRADE_FEE_RATE = 0.001  # 默认交易费率
+
+def _parse_timestamp(value):
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value
+    try:
+        return datetime.fromisoformat(value)
+    except Exception:
+        try:
+            return datetime.strptime(value, '%Y-%m-%d %H:%M:%S')
+        except Exception:
+            return None
+
+def _enrich_positions(positions, quotes, market_type):
+    if market_type != 'a_share':
+        return positions
+    for pos in positions:
+        quote = quotes.get(pos['coin'], {})
+        pos['board'] = quote.get('board')
+        pos['suspension'] = quote.get('suspension', False)
+        pos['limit_up_price'] = quote.get('limit_up_price')
+        pos['limit_down_price'] = quote.get('limit_down_price')
+        pos['fundamentals'] = quote.get('fundamentals', {})
+        pos['is_st'] = quote.get('is_st', False)
+        ts = _parse_timestamp(pos.get('updated_at'))
+        pos['next_sellable_date'] = market_calendar.next_sellable_date('a_share', ts)
+    return positions
+
+def _enrich_trades(trades, quotes, market_type):
+    if market_type != 'a_share':
+        return trades
+    for trade in trades:
+        quote = quotes.get(trade.get('coin'), {})
+        trade['board'] = quote.get('board')
+        trade['suspension'] = quote.get('suspension', False)
+        trade['limit_up_price'] = quote.get('limit_up_price')
+        trade['limit_down_price'] = quote.get('limit_down_price')
+        ts = _parse_timestamp(trade.get('timestamp'))
+        trade['next_sellable_date'] = market_calendar.next_sellable_date('a_share', ts)
+    return trades
 
 @app.route('/')
 def index():
@@ -112,18 +155,37 @@ def get_models():
 
 @app.route('/api/models', methods=['POST'])
 def add_model():
-    data = request.json
+    data = request.json or {}
     try:
-        # Get provider info
-        provider = db.get_provider(data['provider_id'])
+        provider_id = data.get('provider_id')
+        if provider_id is None:
+            return jsonify({'error': 'provider_id is required'}), 400
+        provider = db.get_provider(provider_id)
         if not provider:
             return jsonify({'error': 'Provider not found'}), 404
 
+        market_type = (data.get('market_type') or 'crypto').lower()
+        if market_type not in ('crypto', 'a_share'):
+            return jsonify({'error': 'Unsupported market_type'}), 400
+
+        instruments = data.get('instruments') or data.get('trade_universe') or []
+        if market_type == 'a_share':
+            if not instruments or not isinstance(instruments, list):
+                return jsonify({'error': 'A-share models require instruments list'}), 400
+            instruments = [str(symbol).upper() for symbol in instruments]
+        elif not instruments:
+            instruments = market_fetcher.get_default_instruments('crypto')
+
+        cash_currency = data.get('cash_currency') or ('CNY' if market_type == 'a_share' else 'USD')
+
         model_id = db.add_model(
             name=data['name'],
-            provider_id=data['provider_id'],
+            provider_id=provider_id,
             model_name=data['model_name'],
-            initial_capital=float(data.get('initial_capital', 100000))
+            initial_capital=float(data.get('initial_capital', 100000)),
+            market_type=market_type,
+            instruments=instruments,
+            cash_currency=cash_currency
         )
 
         model = db.get_model(model_id)
@@ -131,14 +193,20 @@ def add_model():
             model_id=model_id,
             db=db,
             market_fetcher=market_fetcher,
+            market_calendar=market_calendar,
+            market_type=model.get('market_type', 'crypto'),
+            instruments=model.get('instruments') or market_fetcher.get_default_instruments(model.get('market_type')),
+            cash_currency=model.get('cash_currency', cash_currency),
             ai_trader=AITrader(
                 api_key=model['api_key'],
                 api_url=model['api_url'],
-                model_name=model['model_name']
+                model_name=model['model_name'],
+                market_type=model.get('market_type', 'crypto'),
+                instruments=model.get('instruments') or []
             ),
-            trade_fee_rate=TRADE_FEE_RATE  # 新增：传入费率
+            trade_fee_rate=TRADE_FEE_RATE
         )
-        print(f"[INFO] Model {model_id} ({data['name']}) initialized")
+        print(f"[INFO] Model {model_id} ({data['name']}) initialized for {market_type}")
 
         return jsonify({'id': model_id, 'message': 'Model added successfully'})
 
@@ -164,10 +232,22 @@ def delete_model(model_id):
 
 @app.route('/api/models/<int:model_id>/portfolio', methods=['GET'])
 def get_portfolio(model_id):
-    prices_data = market_fetcher.get_current_prices(['BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'DOGE'])
-    current_prices = {coin: prices_data[coin]['price'] for coin in prices_data}
+    model = db.get_model(model_id)
+    if not model:
+        return jsonify({'error': 'Model not found'}), 404
+    
+    market_type = model.get('market_type', 'crypto')
+    instruments = model.get('instruments') or market_fetcher.get_default_instruments(market_type)
+    
+    prices_data = market_fetcher.get_current_prices(instruments, market_type=market_type)
+    current_prices = {key: prices_data[key].get('price', 0) for key in prices_data}
     
     portfolio = db.get_portfolio(model_id, current_prices)
+    positions = _enrich_positions(portfolio.get('positions', []), prices_data, market_type)
+    portfolio['positions'] = positions
+    portfolio['market_type'] = market_type
+    portfolio['cash_currency'] = model.get('cash_currency', 'USD')
+    
     account_value = db.get_account_value_history(model_id, limit=100)
     
     return jsonify({
@@ -177,8 +257,16 @@ def get_portfolio(model_id):
 
 @app.route('/api/models/<int:model_id>/trades', methods=['GET'])
 def get_trades(model_id):
+    model = db.get_model(model_id)
+    if not model:
+        return jsonify({'error': 'Model not found'}), 404
     limit = request.args.get('limit', 50, type=int)
     trades = db.get_trades(model_id, limit=limit)
+    market_type = model.get('market_type', 'crypto')
+    if trades and market_type == 'a_share':
+        unique_symbols = list({trade.get('coin') for trade in trades if trade.get('coin')})
+        quotes = market_fetcher.get_current_prices(unique_symbols, market_type='a_share') if unique_symbols else {}
+        trades = _enrich_trades(trades, quotes, 'a_share')
     return jsonify(trades)
 
 @app.route('/api/models/<int:model_id>/conversations', methods=['GET'])
@@ -190,10 +278,6 @@ def get_conversations(model_id):
 @app.route('/api/aggregated/portfolio', methods=['GET'])
 def get_aggregated_portfolio():
     """Get aggregated portfolio data across all models"""
-    prices_data = market_fetcher.get_current_prices(['BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'DOGE'])
-    current_prices = {coin: prices_data[coin]['price'] for coin in prices_data}
-
-    # Get aggregated data
     models = db.get_all_models()
     total_portfolio = {
         'total_value': 0,
@@ -208,45 +292,56 @@ def get_aggregated_portfolio():
     all_positions = {}
 
     for model in models:
+        market_type = model.get('market_type', 'crypto')
+        instruments = model.get('instruments') or market_fetcher.get_default_instruments(market_type)
+        quotes = market_fetcher.get_current_prices(instruments, market_type=market_type)
+        current_prices = {instrument: quotes[instrument].get('price', 0) for instrument in quotes}
+
         portfolio = db.get_portfolio(model['id'], current_prices)
-        if portfolio:
-            total_portfolio['total_value'] += portfolio.get('total_value', 0)
-            total_portfolio['cash'] += portfolio.get('cash', 0)
-            total_portfolio['positions_value'] += portfolio.get('positions_value', 0)
-            total_portfolio['realized_pnl'] += portfolio.get('realized_pnl', 0)
-            total_portfolio['unrealized_pnl'] += portfolio.get('unrealized_pnl', 0)
-            total_portfolio['initial_capital'] += portfolio.get('initial_capital', 0)
+        positions = _enrich_positions(portfolio.get('positions', []), quotes, market_type)
+        portfolio['positions'] = positions
 
-            # Aggregate positions by coin and side
-            for pos in portfolio.get('positions', []):
-                key = f"{pos['coin']}_{pos['side']}"
-                if key not in all_positions:
-                    all_positions[key] = {
-                        'coin': pos['coin'],
-                        'side': pos['side'],
-                        'quantity': 0,
-                        'avg_price': 0,
-                        'total_cost': 0,
-                        'leverage': pos['leverage'],
-                        'current_price': pos['current_price'],
-                        'pnl': 0
-                    }
+        total_portfolio['total_value'] += portfolio.get('total_value', 0)
+        total_portfolio['cash'] += portfolio.get('cash', 0)
+        total_portfolio['positions_value'] += portfolio.get('positions_value', 0)
+        total_portfolio['realized_pnl'] += portfolio.get('realized_pnl', 0)
+        total_portfolio['unrealized_pnl'] += portfolio.get('unrealized_pnl', 0)
+        total_portfolio['initial_capital'] += portfolio.get('initial_capital', 0)
 
-                # Weighted average calculation
-                current_pos = all_positions[key]
-                current_cost = current_pos['quantity'] * current_pos['avg_price']
-                new_cost = pos['quantity'] * pos['avg_price']
-                total_quantity = current_pos['quantity'] + pos['quantity']
+        for pos in positions:
+            key = f"{market_type}_{pos['coin']}_{pos['side']}"
+            if key not in all_positions:
+                all_positions[key] = {
+                    'coin': pos['coin'],
+                    'side': pos['side'],
+                    'market_type': market_type,
+                    'quantity': 0,
+                    'avg_price': 0,
+                    'total_cost': 0,
+                    'leverage': pos['leverage'],
+                    'current_price': pos.get('current_price'),
+                    'pnl': 0,
+                    'board': pos.get('board'),
+                    'suspension': pos.get('suspension'),
+                    'limit_up_price': pos.get('limit_up_price'),
+                    'limit_down_price': pos.get('limit_down_price'),
+                }
 
-                if total_quantity > 0:
-                    current_pos['avg_price'] = (current_cost + new_cost) / total_quantity
-                    current_pos['quantity'] = total_quantity
-                    current_pos['total_cost'] = current_cost + new_cost
-                    current_pos['pnl'] = (pos['current_price'] - current_pos['avg_price']) * total_quantity
+            current_pos = all_positions[key]
+            current_cost = current_pos['quantity'] * current_pos['avg_price']
+            new_cost = pos['quantity'] * pos['avg_price']
+            total_quantity = current_pos['quantity'] + pos['quantity']
+
+            if total_quantity > 0:
+                current_pos['avg_price'] = (current_cost + new_cost) / total_quantity
+                current_pos['quantity'] = total_quantity
+                current_pos['total_cost'] = current_cost + new_cost
+                price = pos.get('current_price') or 0
+                current_pos['current_price'] = price
+                current_pos['pnl'] = (price - current_pos['avg_price']) * total_quantity
 
     total_portfolio['positions'] = list(all_positions.values())
 
-    # Get multi-model chart data
     chart_data = db.get_multi_model_chart_data(limit=100)
 
     return jsonify({
@@ -264,32 +359,81 @@ def get_models_chart_data():
 
 @app.route('/api/market/prices', methods=['GET'])
 def get_market_prices():
-    coins = ['BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'DOGE']
-    prices = market_fetcher.get_current_prices(coins)
+    market_type = request.args.get('market_type', 'crypto').lower()
+    instruments = request.args.getlist('instruments')
+    
+    if market_type == 'a_share':
+        if not instruments:
+            return jsonify({'error': 'instruments parameter required for A-share market'}), 400
+        quotes = market_fetcher.get_current_prices(instruments, market_type='a_share')
+        return jsonify(quotes)
+    
+    if not instruments:
+        instruments = ['BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'DOGE']
+    prices = market_fetcher.get_current_prices(instruments, market_type='crypto')
     return jsonify(prices)
+
+
+@app.route('/api/markets/a-share/symbols', methods=['GET'])
+def get_a_share_symbols():
+    """List supported A-share instruments with board info"""
+    try:
+        board = request.args.get('board')
+        symbols = market_fetcher.a_share_fetcher.list_symbols(board=board)
+        return jsonify(symbols)
+    except Exception as e:
+        print(f"[ERROR] Failed to fetch A-share symbols: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/markets/<market_type>/status', methods=['GET'])
+def get_market_status(market_type: str):
+    """Get current market trading status (open/closed, holidays, next session)"""
+    try:
+        status = market_calendar.get_market_status(market_type)
+        return jsonify(status)
+    except Exception as e:
+        print(f"[ERROR] Failed to fetch market status: {e}")
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/models/<int:model_id>/execute', methods=['POST'])
 def execute_trading(model_id):
+    model = db.get_model(model_id)
+    if not model:
+        return jsonify({'error': 'Model not found'}), 404
+    
+    market_type = model.get('market_type', 'crypto')
+    if not market_calendar.is_market_open(market_type):
+        status = market_calendar.get_market_status(market_type)
+        return jsonify({
+            'error': f'Market {market_type} is currently closed',
+            'market_status': status
+        }), 400
+    
     if model_id not in trading_engines:
-        model = db.get_model(model_id)
-        if not model:
-            return jsonify({'error': 'Model not found'}), 404
-
-        # Get provider info
         provider = db.get_provider(model['provider_id'])
         if not provider:
             return jsonify({'error': 'Provider not found'}), 404
+        
+        instruments = model.get('instruments') or market_fetcher.get_default_instruments(market_type)
+        cash_currency = model.get('cash_currency', 'USD')
 
         trading_engines[model_id] = TradingEngine(
             model_id=model_id,
             db=db,
             market_fetcher=market_fetcher,
+            market_calendar=market_calendar,
+            market_type=market_type,
+            instruments=instruments,
+            cash_currency=cash_currency,
             ai_trader=AITrader(
                 api_key=provider['api_key'],
                 api_url=provider['api_url'],
-                model_name=model['model_name']
+                model_name=model['model_name'],
+                market_type=market_type,
+                instruments=instruments
             ),
-            trade_fee_rate=TRADE_FEE_RATE  # 新增：传入费率
+            trade_fee_rate=TRADE_FEE_RATE
         )
     
     try:
@@ -314,9 +458,17 @@ def trading_loop():
             
             for model_id, engine in list(trading_engines.items()):
                 try:
-                    print(f"\n[EXEC] Model {model_id}")
+                    market_type = getattr(engine, 'market_type', 'crypto')
+                    status = market_calendar.get_market_status(market_type)
+                    if not status.get('market_open', True):
+                        reason = status.get('reason') or 'Closed'
+                        next_open = status.get('next_open')
+                        print(f"[SKIP] Model {model_id} ({market_type}) market closed: {reason} (next: {next_open})")
+                        continue
+
+                    print(f"\n[EXEC] Model {model_id} [{market_type}]")
                     result = engine.execute_trading_cycle()
-                    
+
                     if result.get('success'):
                         print(f"[OK] Model {model_id} completed")
                         if result.get('executions'):
@@ -329,7 +481,7 @@ def trading_loop():
                     else:
                         error = result.get('error', 'Unknown error')
                         print(f"[WARN] Model {model_id} failed: {error}")
-                        
+
                 except Exception as e:
                     print(f"[ERROR] Model {model_id} exception: {e}")
                     import traceback
@@ -356,20 +508,24 @@ def get_leaderboard():
     models = db.get_all_models()
     leaderboard = []
     
-    prices_data = market_fetcher.get_current_prices(['BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'DOGE'])
-    current_prices = {coin: prices_data[coin]['price'] for coin in prices_data}
-    
     for model in models:
+        market_type = model.get('market_type', 'crypto')
+        instruments = model.get('instruments') or market_fetcher.get_default_instruments(market_type)
+        quotes = market_fetcher.get_current_prices(instruments, market_type=market_type)
+        current_prices = {instrument: quotes[instrument].get('price', 0) for instrument in quotes}
+        
         portfolio = db.get_portfolio(model['id'], current_prices)
         account_value = portfolio.get('total_value', model['initial_capital'])
-        returns = ((account_value - model['initial_capital']) / model['initial_capital']) * 100
+        initial_cap = model['initial_capital']
+        returns = ((account_value - initial_cap) / initial_cap) * 100 if initial_cap else 0
         
         leaderboard.append({
             'model_id': model['id'],
             'model_name': model['name'],
+            'market_type': market_type,
             'account_value': account_value,
             'returns': returns,
-            'initial_capital': model['initial_capital']
+            'initial_capital': initial_cap
         })
     
     leaderboard.sort(key=lambda x: x['returns'], reverse=True)
@@ -514,24 +670,33 @@ def init_trading_engines():
             model_name = model['name']
 
             try:
-                # Get provider info
                 provider = db.get_provider(model['provider_id'])
                 if not provider:
                     print(f"  [WARN] Model {model_id} ({model_name}): Provider not found")
                     continue
 
+                market_type = model.get('market_type', 'crypto')
+                instruments = model.get('instruments') or market_fetcher.get_default_instruments(market_type)
+                cash_currency = model.get('cash_currency', 'USD')
+
                 trading_engines[model_id] = TradingEngine(
                     model_id=model_id,
                     db=db,
                     market_fetcher=market_fetcher,
+                    market_calendar=market_calendar,
+                    market_type=market_type,
+                    instruments=instruments,
+                    cash_currency=cash_currency,
                     ai_trader=AITrader(
                         api_key=provider['api_key'],
                         api_url=provider['api_url'],
-                        model_name=model['model_name']
+                        model_name=model['model_name'],
+                        market_type=market_type,
+                        instruments=instruments
                     ),
                     trade_fee_rate=TRADE_FEE_RATE
                 )
-                print(f"  [OK] Model {model_id} ({model_name})")
+                print(f"  [OK] Model {model_id} ({model_name}) [{market_type}]")
             except Exception as e:
                 print(f"  [ERROR] Model {model_id} ({model_name}): {e}")
                 continue

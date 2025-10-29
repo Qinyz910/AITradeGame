@@ -41,10 +41,29 @@ class Database:
                 provider_id INTEGER,
                 model_name TEXT NOT NULL,
                 initial_capital REAL DEFAULT 10000,
+                market_type TEXT DEFAULT 'crypto',
+                instruments TEXT,
+                cash_currency TEXT DEFAULT 'USD',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (provider_id) REFERENCES providers(id)
             )
         ''')
+        
+        # Add new columns to existing models table if they don't exist
+        try:
+            cursor.execute('ALTER TABLE models ADD COLUMN market_type TEXT DEFAULT "crypto"')
+        except sqlite3.OperationalError:
+            pass
+        
+        try:
+            cursor.execute('ALTER TABLE models ADD COLUMN instruments TEXT')
+        except sqlite3.OperationalError:
+            pass
+        
+        try:
+            cursor.execute('ALTER TABLE models ADD COLUMN cash_currency TEXT DEFAULT "USD"')
+        except sqlite3.OperationalError:
+            pass
         
         # Portfolios table
         cursor.execute('''
@@ -238,7 +257,8 @@ class Database:
             'margin_used': margin_used,
             'total_value': total_value,
             'realized_pnl': realized_pnl,
-            'unrealized_pnl': unrealized_pnl
+            'unrealized_pnl': unrealized_pnl,
+            'initial_capital': initial_capital
         }
     
     def close_position(self, model_id: int, coin: str, side: str = 'long'):
@@ -521,14 +541,27 @@ class Database:
 
     # ============ Model Management (Updated) ============
 
-    def add_model(self, name: str, provider_id: int, model_name: str, initial_capital: float = 10000) -> int:
+    def add_model(
+        self,
+        name: str,
+        provider_id: int,
+        model_name: str,
+        initial_capital: float = 10000,
+        market_type: str = 'crypto',
+        instruments: Optional[List[str]] = None,
+        cash_currency: str = 'USD'
+    ) -> int:
         """Add new trading model"""
         conn = self.get_connection()
         cursor = conn.cursor()
-        cursor.execute('''
-            INSERT INTO models (name, provider_id, model_name, initial_capital)
-            VALUES (?, ?, ?, ?)
-        ''', (name, provider_id, model_name, initial_capital))
+        instruments_json = json.dumps(instruments or [])
+        cursor.execute(
+            '''
+            INSERT INTO models (name, provider_id, model_name, initial_capital, market_type, instruments, cash_currency)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''',
+            (name, provider_id, model_name, initial_capital, market_type, instruments_json, cash_currency)
+        )
         model_id = cursor.lastrowid
         conn.commit()
         conn.close()
@@ -546,7 +579,17 @@ class Database:
         ''', (model_id,))
         row = cursor.fetchone()
         conn.close()
-        return dict(row) if row else None
+        if row:
+            result = dict(row)
+            if 'instruments' in result and result['instruments']:
+                try:
+                    result['instruments'] = json.loads(result['instruments'])
+                except (json.JSONDecodeError, TypeError):
+                    result['instruments'] = []
+            else:
+                result['instruments'] = []
+            return result
+        return None
 
     def get_all_models(self) -> List[Dict]:
         """Get all trading models"""
@@ -560,5 +603,16 @@ class Database:
         ''')
         rows = cursor.fetchall()
         conn.close()
-        return [dict(row) for row in rows]
+        results = []
+        for row in rows:
+            item = dict(row)
+            if 'instruments' in item and item['instruments']:
+                try:
+                    item['instruments'] = json.loads(item['instruments'])
+                except (json.JSONDecodeError, TypeError):
+                    item['instruments'] = []
+            else:
+                item['instruments'] = []
+            results.append(item)
+        return results
 
