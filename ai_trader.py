@@ -1,16 +1,31 @@
 import json
-from typing import Dict
+from typing import Dict, Optional
 from openai import OpenAI, APIConnectionError, APIError
 
 class AITrader:
-    def __init__(self, api_key: str, api_url: str, model_name: str):
+    def __init__(
+        self,
+        api_key: str,
+        api_url: str,
+        model_name: str,
+        market_type: str = 'crypto',
+        instruments: Optional[list] = None
+    ):
         self.api_key = api_key
         self.api_url = api_url
         self.model_name = model_name
+        self.market_type = (market_type or 'crypto').lower()
+        self.instruments = instruments or []
     
-    def make_decision(self, market_state: Dict, portfolio: Dict, 
-                     account_info: Dict) -> Dict:
-        prompt = self._build_prompt(market_state, portfolio, account_info)
+    def make_decision(
+        self,
+        market_state: Dict,
+        portfolio: Dict,
+        account_info: Dict,
+        context: Optional[Dict] = None
+    ) -> Dict:
+        ctx = context or {}
+        prompt = self._build_prompt(market_state, portfolio, account_info, ctx)
         
         response = self._call_llm(prompt)
         
@@ -18,34 +33,70 @@ class AITrader:
         
         return decisions
     
-    def _build_prompt(self, market_state: Dict, portfolio: Dict, 
-                     account_info: Dict) -> str:
-        prompt = f"""You are a professional cryptocurrency trader. Analyze the market and make trading decisions.
+    def _build_prompt(
+        self,
+        market_state: Dict,
+        portfolio: Dict,
+        account_info: Dict,
+        context: Optional[Dict] = None
+    ) -> str:
+        ctx = context or {}
+        market_type = ctx.get('market_type', self.market_type)
+        
+        if market_type == 'a_share':
+            asset_type = 'A-share stocks'
+            role = 'professional Chinese A-share stock trader'
+        else:
+            asset_type = 'cryptocurrencies'
+            role = 'professional cryptocurrency trader'
+        
+        prompt = f"""You are a {role}. Analyze the market and make trading decisions for {asset_type}.
 
 MARKET DATA:
 """
-        for coin, data in market_state.items():
-            prompt += f"{coin}: ${data['price']:.2f} ({data['change_24h']:+.2f}%)\n"
-            if 'indicators' in data and data['indicators']:
+        for symbol, data in market_state.items():
+            price = data.get('price', 0)
+            change = data.get('change_24h', 0)
+            prompt += f"{symbol}: {price:.2f} ({change:+.2f}%)\n"
+            if market_type == 'a_share':
+                prompt += f"  Board: {data.get('board', 'n/a')}, Limit Up: {data.get('limit_up_price', 'n/a')}, Limit Down: {data.get('limit_down_price', 'n/a')}\n"
+                fundamentals = data.get('fundamentals', {})
+                if fundamentals:
+                    details = ", ".join(
+                        f"{key}:{value}" for key, value in fundamentals.items() if value not in (None, 0)
+                    )
+                    if details:
+                        prompt += f"  Fundamentals: {details}\n"
+            elif 'indicators' in data and data['indicators']:
                 indicators = data['indicators']
-                prompt += f"  SMA7: ${indicators.get('sma_7', 0):.2f}, SMA14: ${indicators.get('sma_14', 0):.2f}, RSI: {indicators.get('rsi_14', 0):.1f}\n"
+                prompt += f"  SMA7: {indicators.get('sma_7', 0):.2f}, SMA14: {indicators.get('sma_14', 0):.2f}, RSI: {indicators.get('rsi_14', 0):.1f}\n"
         
         prompt += f"""
+
 ACCOUNT STATUS:
-- Initial Capital: ${account_info['initial_capital']:.2f}
-- Total Value: ${portfolio['total_value']:.2f}
-- Cash: ${portfolio['cash']:.2f}
+- Initial Capital: {account_info['initial_capital']:.2f}
+- Total Value: {portfolio['total_value']:.2f}
+- Cash: {portfolio['cash']:.2f} {account_info.get('cash_currency', '')}
 - Total Return: {account_info['total_return']:.2f}%
 
 CURRENT POSITIONS:
 """
         if portfolio['positions']:
             for pos in portfolio['positions']:
-                prompt += f"- {pos['coin']} {pos['side']}: {pos['quantity']:.4f} @ ${pos['avg_price']:.2f} ({pos['leverage']}x)\n"
+                prompt += f"- {pos['coin']} {pos['side']}: {pos['quantity']:.4f} @ {pos['avg_price']:.2f} ({pos['leverage']}x)\n"
         else:
             prompt += "None\n"
         
-        prompt += """
+        if market_type == 'a_share':
+            prompt += """
+TRADING RULES:
+1. Signals: buy_to_enter (long), close_position, hold
+2. Short selling is not permitted.
+3. Respect daily limit up/down bands.
+4. Avoid suspended securities; ensure liquidity considerations.
+"""
+        else:
+            prompt += """
 TRADING RULES:
 1. Signals: buy_to_enter (long), sell_to_enter (short), close_position, hold
 2. Risk Management:
@@ -60,16 +111,18 @@ TRADING RULES:
    - Close losing positions quickly
    - Let winners run
    - Use technical indicators
-
+"""
+        
+        prompt += """
 OUTPUT FORMAT (JSON only):
 ```json
 {
-  "COIN": {
+  "INSTRUMENT": {
     "signal": "buy_to_enter|sell_to_enter|hold|close_position",
     "quantity": 0.5,
-    "leverage": 10,
-    "profit_target": 45000.0,
-    "stop_loss": 42000.0,
+    "leverage": 1,
+    "profit_target": 0.0,
+    "stop_loss": 0.0,
     "confidence": 0.75,
     "justification": "Brief reason"
   }
@@ -100,7 +153,7 @@ Analyze and output JSON only.
                 messages=[
                     {
                         "role": "system",
-                        "content": "You are a professional cryptocurrency trader. Output JSON format only."
+                        "content": "You are a professional trader. Output JSON format only."
                     },
                     {
                         "role": "user",

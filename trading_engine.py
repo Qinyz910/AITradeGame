@@ -1,28 +1,50 @@
 from datetime import datetime
-from typing import Dict
+from typing import Dict, List
 import json
 
 class TradingEngine:
-    def __init__(self, model_id: int, db, market_fetcher, ai_trader, trade_fee_rate: float = 0.001):
+    def __init__(
+        self,
+        model_id: int,
+        db,
+        market_fetcher,
+        ai_trader,
+        trade_fee_rate: float = 0.001,
+        market_calendar=None,
+        market_type: str = 'crypto',
+        instruments: List[str] = None,
+        cash_currency: str = 'USD'
+    ):
         self.model_id = model_id
         self.db = db
         self.market_fetcher = market_fetcher
         self.ai_trader = ai_trader
-        self.coins = ['BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'DOGE']
-        self.trade_fee_rate = trade_fee_rate  # 从配置中传入费率
+        self.trade_fee_rate = trade_fee_rate
+        self.market_calendar = market_calendar
+        self.market_type = (market_type or 'crypto').lower()
+        self.instruments = instruments or ['BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'DOGE']
+        self.cash_currency = cash_currency or 'USD'
+        self.coins = self.instruments
     
     def execute_trading_cycle(self) -> Dict:
         try:
             market_state = self._get_market_state()
+            if not market_state:
+                raise ValueError('Market state unavailable')
             
-            current_prices = {coin: market_state[coin]['price'] for coin in market_state}
+            current_prices = {instrument: market_state[instrument]['price'] for instrument in market_state}
             
             portfolio = self.db.get_portfolio(self.model_id, current_prices)
             
             account_info = self._build_account_info(portfolio)
+            context = {
+                'market_type': self.market_type,
+                'cash_currency': self.cash_currency,
+                'instruments': self.instruments
+            }
             
             decisions = self.ai_trader.make_decision(
-                market_state, portfolio, account_info
+                market_state, portfolio, account_info, context
             )
             
             self.db.add_conversation(
@@ -59,14 +81,23 @@ class TradingEngine:
             }
     
     def _get_market_state(self) -> Dict:
-        market_state = {}
-        prices = self.market_fetcher.get_current_prices(self.coins)
+        market_state: Dict = {}
+        prices = self.market_fetcher.get_current_prices(self.instruments, market_type=self.market_type)
         
-        for coin in self.coins:
-            if coin in prices:
-                market_state[coin] = prices[coin].copy()
-                indicators = self.market_fetcher.calculate_technical_indicators(coin)
-                market_state[coin]['indicators'] = indicators
+        for instrument in self.instruments:
+            if instrument not in prices:
+                continue
+            payload = prices[instrument].copy()
+            payload['price'] = payload.get('price', 0)
+            market_state[instrument] = payload
+            if self.market_type == 'crypto':
+                indicators = self.market_fetcher.calculate_technical_indicators(instrument)
+                market_state[instrument]['indicators'] = indicators
+            else:
+                if 'board' not in payload and 'board' in prices[instrument]:
+                    payload['board'] = prices[instrument].get('board')
+                if 'change_24h' not in payload and 'change_pct' in payload:
+                    payload['change_24h'] = payload.get('change_pct')
         
         return market_state
     
@@ -74,44 +105,55 @@ class TradingEngine:
         model = self.db.get_model(self.model_id)
         initial_capital = model['initial_capital']
         total_value = portfolio['total_value']
-        total_return = ((total_value - initial_capital) / initial_capital) * 100
+        total_return = ((total_value - initial_capital) / initial_capital) * 100 if initial_capital else 0
         
         return {
             'current_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'total_return': total_return,
-            'initial_capital': initial_capital
+            'initial_capital': initial_capital,
+            'cash_currency': self.cash_currency
         }
     
     def _format_prompt(self, market_state: Dict, portfolio: Dict, 
                       account_info: Dict) -> str:
-        return f"Market State: {len(market_state)} coins, Portfolio: {len(portfolio['positions'])} positions"
+        return (
+            f"Market {self.market_type.upper()} State: {len(market_state)} instruments, "
+            f"Portfolio: {len(portfolio['positions'])} positions"
+        )
     
     def _execute_decisions(self, decisions: Dict, market_state: Dict, 
                           portfolio: Dict) -> list:
         results = []
         
-        for coin, decision in decisions.items():
-            if coin not in self.coins:
+        for instrument, decision in decisions.items():
+            if instrument not in self.instruments:
+                continue
+            if instrument not in market_state:
+                results.append({'coin': instrument, 'error': 'No market data available'})
                 continue
             
             signal = decision.get('signal', '').lower()
             
+            if self.market_type == 'a_share' and signal == 'sell_to_enter':
+                results.append({'coin': instrument, 'error': 'Short selling not supported in A-share market'})
+                continue
+            
             try:
                 if signal == 'buy_to_enter':
-                    result = self._execute_buy(coin, decision, market_state, portfolio)
+                    result = self._execute_buy(instrument, decision, market_state, portfolio)
                 elif signal == 'sell_to_enter':
-                    result = self._execute_sell(coin, decision, market_state, portfolio)
+                    result = self._execute_sell(instrument, decision, market_state, portfolio)
                 elif signal == 'close_position':
-                    result = self._execute_close(coin, decision, market_state, portfolio)
+                    result = self._execute_close(instrument, decision, market_state, portfolio)
                 elif signal == 'hold':
-                    result = {'coin': coin, 'signal': 'hold', 'message': 'Hold position'}
+                    result = {'coin': instrument, 'signal': 'hold', 'message': 'Hold position'}
                 else:
-                    result = {'coin': coin, 'error': f'Unknown signal: {signal}'}
+                    result = {'coin': instrument, 'error': f'Unknown signal: {signal}'}
                 
                 results.append(result)
                 
             except Exception as e:
-                results.append({'coin': coin, 'error': str(e)})
+                results.append({'coin': instrument, 'error': str(e)})
         
         return results
     
@@ -119,17 +161,17 @@ class TradingEngine:
                     portfolio: Dict) -> Dict:
         quantity = float(decision.get('quantity', 0))
         leverage = int(decision.get('leverage', 1))
+        if self.market_type == 'a_share':
+            leverage = 1
         price = market_state[coin]['price']
         
         if quantity <= 0:
             return {'coin': coin, 'error': 'Invalid quantity'}
         
-        # 计算交易额和交易费（按交易额的比例）
-        trade_amount = quantity * price  # 交易额
-        trade_fee = trade_amount * self.trade_fee_rate  # 交易费（0.1%）
-        required_margin = (quantity * price) / leverage  # 保证金
+        trade_amount = quantity * price
+        trade_fee = trade_amount * self.trade_fee_rate
+        required_margin = (quantity * price) / leverage
         
-        # 总需资金 = 保证金 + 交易费
         total_required = required_margin + trade_fee
         if total_required > portfolio['cash']:
             return {'coin': coin, 'error': 'Insufficient cash (including fees)'}
